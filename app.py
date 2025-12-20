@@ -1069,10 +1069,57 @@ def show_centre_coordinator():
                 for date_str in unique_dates:
                     with st.expander(f"📅 {date_str}", expanded=False):
                         date_shifts = venue_data[venue_data['DATE'] == date_str]['SHIFT'].unique()
-                        
-                        for shift in sorted(date_shifts):
-                            shift_key = f"{date_str}_{shift}"
-                            selected = st.checkbox(shift, key=shift_key)
+                        # Date and Shift Selection
+st.markdown("### 📅 Date & Shift Selection")
+
+if st.session_state.mock_test_mode:
+    # Mock test date entry
+    col_date1, col_date2 = st.columns(2)
+    with col_date1:
+        mock_date = st.date_input("Mock Test Date:", 
+                                 value=datetime.now().date(),
+                                 key="mock_date")
+    with col_date2:
+        mock_shift = st.selectbox("Shift:", 
+                                 ["Morning", "Afternoon", "Evening"],
+                                 key="mock_shift")
+    
+    if st.button("➕ Add Mock Test Date", key="add_mock_date"):
+        date_info = {
+            'date': mock_date.strftime("%d-%m-%Y"),
+            'shift': mock_shift,
+            'is_mock': True
+        }
+        if date_info not in st.session_state.selected_dates:
+            st.session_state.selected_dates.append(date_info)
+            st.success(f"Added {date_info['date']} ({mock_shift})")
+else:
+    # Normal date selection from venue data
+    venue_data = st.session_state.venue_df[
+        st.session_state.venue_df['VENUE'] == selected_venue
+    ]
+    
+    if not venue_data.empty:
+        # Get unique dates for this venue
+        unique_dates = sorted(venue_data['DATE'].dropna().unique())
+        
+        if unique_dates:
+            st.write(f"**Available dates for {selected_venue}:**")
+            
+            # Create a date selection interface
+            selected_date_shifts = []
+            
+            for date_str in unique_dates:
+                with st.expander(f"📅 {date_str}", expanded=False):
+                    date_shifts = venue_data[venue_data['DATE'] == date_str]['SHIFT'].unique()
+                    
+                    # Convert shifts to strings and filter out any NaN values
+                    date_shifts = [str(shift) for shift in date_shifts if pd.notna(shift)]
+                    
+                    for shift in sorted(date_shifts):
+                        if shift:  # Ensure shift is not empty string
+                            shift_key = f"{date_str}_{shift}_{selected_venue}"
+                            selected = st.checkbox(str(shift), key=shift_key)
                             
                             if selected:
                                 selected_date_shifts.append({
@@ -1080,9 +1127,16 @@ def show_centre_coordinator():
                                     'shift': shift,
                                     'is_mock': False
                                 })
-                
-                if selected_date_shifts:
-                    st.session_state.selected_dates = selected_date_shifts
+            
+            if selected_date_shifts:
+                st.session_state.selected_dates = selected_date_shifts
+                st.info(f"✅ Selected {len(selected_date_shifts)} date-shift combinations")
+            else:
+                st.info("No dates selected. Please select at least one date-shift combination.")
+        else:
+            st.warning(f"No dates available for {selected_venue}")
+    else:
+        st.warning(f"No data found for venue: {selected_venue}")
                     st.info(f"✅ Selected {len(selected_date_shifts)} date-shift combinations")
             else:
                 st.warning(f"No dates available for {selected_venue}")
@@ -2920,3 +2974,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
