@@ -117,6 +117,12 @@ def initialize_session_state():
     if 'selected_ey' not in st.session_state:
         st.session_state.selected_ey = ""
     
+    # Date selection state
+    if 'date_selection_state' not in st.session_state:
+        st.session_state.date_selection_state = {}
+    if 'expanded_dates' not in st.session_state:
+        st.session_state.expanded_dates = {}
+    
     # File upload tracking
     if 'io_master_loaded' not in st.session_state:
         st.session_state.io_master_loaded = False
@@ -887,6 +893,165 @@ def show_exam_management():
             show_allocation_references()
 
 # ============================================================================
+# ENHANCED DATE SELECTION COMPONENT
+# ============================================================================
+
+def create_date_selector(venue_data, selected_venue):
+    """Create enhanced date selection interface with color coding"""
+    if venue_data.empty:
+        st.warning(f"No data found for venue: {selected_venue}")
+        return []
+    
+    # Get unique dates
+    unique_dates = sorted(venue_data['DATE'].dropna().unique())
+    
+    if not unique_dates:
+        st.warning(f"No dates available for {selected_venue}")
+        return []
+    
+    st.write(f"**Available dates for {selected_venue}:**")
+    
+    # Initialize date selection state if not exists
+    if 'date_selection_state' not in st.session_state:
+        st.session_state.date_selection_state = {}
+    
+    if 'expanded_dates' not in st.session_state:
+        st.session_state.expanded_dates = {}
+    
+    # Get venue key for state management
+    venue_key = f"{st.session_state.current_exam_key}_{selected_venue}"
+    if venue_key not in st.session_state.date_selection_state:
+        st.session_state.date_selection_state[venue_key] = {}
+    
+    if venue_key not in st.session_state.expanded_dates:
+        st.session_state.expanded_dates[venue_key] = {}
+    
+    selected_date_shifts = []
+    
+    for date_str in unique_dates:
+        # Get shifts for this date
+        date_shifts_data = venue_data[venue_data['DATE'] == date_str]
+        date_shifts = date_shifts_data['SHIFT'].unique()
+        
+        # Convert to strings and filter
+        date_shifts = [str(shift) for shift in date_shifts if pd.notna(shift) and str(shift) != '']
+        
+        if not date_shifts:
+            continue
+        
+        # Initialize date state if not exists
+        date_key = f"{venue_key}_{date_str}"
+        if date_key not in st.session_state.date_selection_state[venue_key]:
+            st.session_state.date_selection_state[venue_key][date_key] = {
+                'all_selected': False,
+                'shifts': {shift: False for shift in date_shifts}
+            }
+        
+        if date_str not in st.session_state.expanded_dates[venue_key]:
+            st.session_state.expanded_dates[venue_key][date_str] = False
+        
+        # Get current state
+        date_state = st.session_state.date_selection_state[venue_key][date_key]
+        is_expanded = st.session_state.expanded_dates[venue_key][date_str]
+        
+        # Calculate selection status
+        selected_shifts = [shift for shift, selected in date_state['shifts'].items() if selected]
+        all_selected = len(selected_shifts) == len(date_shifts)
+        partially_selected = len(selected_shifts) > 0 and not all_selected
+        none_selected = len(selected_shifts) == 0
+        
+        # Determine color based on selection
+        if all_selected:
+            bg_color = "#4CAF50"  # Green
+            border_color = "#388E3C"
+            status_text = "✓ All Selected"
+            emoji = "🟢"
+        elif partially_selected:
+            bg_color = "#FF9800"  # Orange
+            border_color = "#F57C00"
+            status_text = f"✓ {len(selected_shifts)}/{len(date_shifts)} Selected"
+            emoji = "🟠"
+        else:
+            bg_color = "#FFEB3B"  # Yellow
+            border_color = "#FBC02D"
+            status_text = "Not Selected"
+            emoji = "🟡"
+        
+        # Create date header with selection status
+        col1, col2, col3 = st.columns([3, 2, 1])
+        
+        with col1:
+            # Create a styled date header
+            st.markdown(f"""
+                <div style="
+                    background-color: {bg_color};
+                    color: #333;
+                    padding: 10px 15px;
+                    border-radius: 8px;
+                    border: 2px solid {border_color};
+                    margin: 5px 0;
+                    cursor: pointer;
+                    font-weight: bold;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                ">
+                {emoji} <strong>{date_str}</strong> - {status_text}
+                </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            # Single click to select all
+            if st.button(f"🎯 Select All", key=f"select_all_{date_key}", 
+                        use_container_width=True):
+                # Toggle all shifts
+                if all_selected:
+                    # Deselect all
+                    for shift in date_shifts:
+                        date_state['shifts'][shift] = False
+                else:
+                    # Select all
+                    for shift in date_shifts:
+                        date_state['shifts'][shift] = True
+                st.rerun()
+        
+        with col3:
+            # Toggle expand/collapse
+            expand_label = "📖 Show Shifts" if not is_expanded else "📕 Hide Shifts"
+            if st.button(expand_label, key=f"expand_{date_key}", 
+                        use_container_width=True):
+                st.session_state.expanded_dates[venue_key][date_str] = not is_expanded
+                st.rerun()
+        
+        # Show shift selection if expanded
+        if is_expanded:
+            st.markdown("**Select Shifts:**")
+            
+            # Create columns for shifts
+            shift_cols = st.columns(min(4, len(date_shifts)))
+            
+            for idx, shift in enumerate(sorted(date_shifts)):
+                col_idx = idx % len(shift_cols)
+                with shift_cols[col_idx]:
+                    shift_selected = st.checkbox(
+                        f"⏰ {shift}",
+                        value=date_state['shifts'][shift],
+                        key=f"shift_{date_key}_{shift}"
+                    )
+                    date_state['shifts'][shift] = shift_selected
+            
+            st.markdown("---")
+        
+        # Add selected shifts to result
+        for shift, selected in date_state['shifts'].items():
+            if selected:
+                selected_date_shifts.append({
+                    'date': date_str,
+                    'shift': shift,
+                    'is_mock': False
+                })
+    
+    return selected_date_shifts
+
+# ============================================================================
 # CENTRE COORDINATOR MODULE
 # ============================================================================
 
@@ -1076,41 +1241,14 @@ def show_centre_coordinator():
         ]
         
         if not venue_data.empty:
-            # Get unique dates for this venue
-            unique_dates = sorted(venue_data['DATE'].dropna().unique())
+            # Use enhanced date selector
+            selected_date_shifts = create_date_selector(venue_data, selected_venue)
             
-            if unique_dates:
-                st.write(f"**Available dates for {selected_venue}:**")
-                
-                # Create a date selection interface
-                selected_date_shifts = []
-                
-                for date_str in unique_dates:
-                    with st.expander(f"📅 {date_str}", expanded=False):
-                        date_shifts = venue_data[venue_data['DATE'] == date_str]['SHIFT'].unique()
-                        
-                        # Convert shifts to strings and filter out any NaN or empty values
-                        date_shifts = [str(shift) for shift in date_shifts if pd.notna(shift) and str(shift) != '']
-                        
-                        for shift in sorted(date_shifts):
-                            if shift:  # Ensure shift is not empty string
-                                shift_key = f"{date_str}_{shift}_{selected_venue}"
-                                selected = st.checkbox(str(shift), key=shift_key)
-                                
-                                if selected:
-                                    selected_date_shifts.append({
-                                        'date': date_str,
-                                        'shift': shift,
-                                        'is_mock': False
-                                    })
-                
-                if selected_date_shifts:
-                    st.session_state.selected_dates = selected_date_shifts
-                    st.info(f"✅ Selected {len(selected_date_shifts)} date-shift combinations")
-                else:
-                    st.info("No dates selected. Please select at least one date-shift combination.")
+            if selected_date_shifts:
+                st.session_state.selected_dates = selected_date_shifts
+                st.info(f"✅ Selected {len(selected_date_shifts)} date-shift combinations")
             else:
-                st.warning(f"No dates available for {selected_venue}")
+                st.info("No dates selected. Please select at least one date-shift combination.")
         else:
             st.warning(f"No data found for venue: {selected_venue}")
     
@@ -1119,13 +1257,16 @@ def show_centre_coordinator():
     
     # Filter IOs based on venue
     if selected_venue and not st.session_state.mock_test_mode:
-        venue_row = venue_data.iloc[0] if not venue_data.empty else None
-        centre_code = str(venue_row['CENTRE_CODE']).zfill(4) if venue_row and 'CENTRE_CODE' in venue_row else ''
-        
-        if centre_code and 'CENTRE_CODE' in st.session_state.io_df.columns:
-            filtered_io = st.session_state.io_df[
-                st.session_state.io_df['CENTRE_CODE'].astype(str).str.zfill(4).str.startswith(centre_code[:4])
-            ]
+        if not venue_data.empty:
+            venue_row = venue_data.iloc[0]
+            centre_code = str(venue_row['CENTRE_CODE']).zfill(4) if 'CENTRE_CODE' in venue_row else ''
+            
+            if centre_code and 'CENTRE_CODE' in st.session_state.io_df.columns:
+                filtered_io = st.session_state.io_df[
+                    st.session_state.io_df['CENTRE_CODE'].astype(str).str.zfill(4).str.startswith(centre_code[:4])
+                ]
+            else:
+                filtered_io = st.session_state.io_df
         else:
             filtered_io = st.session_state.io_df
     else:
