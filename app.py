@@ -301,14 +301,14 @@ def load_default_master_data():
             date_str = date.strftime("%d-%m-%Y")
             for shift in ['Morning', 'Afternoon', 'Evening']:
                 venue_data.append({
-                    'VENUE': venue_name,
-                    'DATE': date_str,
-                    'SHIFT': shift,
-                    'CENTRE_CODE': centre_code,
+                    'VENUE': str(venue_name),
+                    'DATE': str(date_str),
+                    'SHIFT': str(shift),
+                    'CENTRE_CODE': str(centre_code),
                     'ADDRESS': f'Address for {venue_name}',
-                    'CENTRE NAME': venue_name,
+                    'CENTRE NAME': str(venue_name),
                     'STATE': 'West Bengal',
-                    'DISTRICT': venue_name.split()[0],
+                    'DISTRICT': str(venue_name.split()[0]),
                     'CAPACITY': 500 + (venue_idx * 100)
                 })
     
@@ -976,17 +976,36 @@ def show_centre_coordinator():
                 if missing_cols:
                     st.error(f"❌ Missing columns: {', '.join(missing_cols)}")
                 else:
-                    # Process dates
+                    # Process dates - ensure they're in proper format
                     if 'DATE' in st.session_state.venue_df.columns:
                         st.session_state.venue_df['DATE'] = pd.to_datetime(
                             st.session_state.venue_df['DATE'], errors='coerce'
                         ).dt.strftime('%d-%m-%Y')
+                    
+                    # Clean SHIFT column - ensure it's string and has no NaN
+                    if 'SHIFT' in st.session_state.venue_df.columns:
+                        st.session_state.venue_df['SHIFT'] = st.session_state.venue_df['SHIFT'].astype(str).str.strip()
+                        # Replace any 'nan' strings with empty string
+                        st.session_state.venue_df['SHIFT'] = st.session_state.venue_df['SHIFT'].replace('nan', '')
+                    
+                    # Clean VENUE column
+                    if 'VENUE' in st.session_state.venue_df.columns:
+                        st.session_state.venue_df['VENUE'] = st.session_state.venue_df['VENUE'].astype(str).str.strip()
+                    
+                    # Remove any rows with empty VENUE or DATE
+                    st.session_state.venue_df = st.session_state.venue_df[
+                        (st.session_state.venue_df['VENUE'].notna()) & 
+                        (st.session_state.venue_df['VENUE'] != '') &
+                        (st.session_state.venue_df['DATE'].notna()) & 
+                        (st.session_state.venue_df['DATE'] != '')
+                    ]
                     
                     st.session_state.venue_master_loaded = True
                     st.success(f"✅ Loaded {len(st.session_state.venue_df)} venue records")
                     del st.session_state.show_venue_upload
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
+                st.error("Please ensure your Excel file has the correct format with VENUE, DATE, and SHIFT columns.")
     
     # Check if we have required data
     if not st.session_state.venue_master_loaded:
@@ -1069,75 +1088,27 @@ def show_centre_coordinator():
                 for date_str in unique_dates:
                     with st.expander(f"📅 {date_str}", expanded=False):
                         date_shifts = venue_data[venue_data['DATE'] == date_str]['SHIFT'].unique()
-                        # Date and Shift Selection
-st.markdown("### 📅 Date & Shift Selection")
-
-if st.session_state.mock_test_mode:
-    # Mock test date entry
-    col_date1, col_date2 = st.columns(2)
-    with col_date1:
-        mock_date = st.date_input("Mock Test Date:", 
-                                 value=datetime.now().date(),
-                                 key="mock_date")
-    with col_date2:
-        mock_shift = st.selectbox("Shift:", 
-                                 ["Morning", "Afternoon", "Evening"],
-                                 key="mock_shift")
-    
-    if st.button("➕ Add Mock Test Date", key="add_mock_date"):
-        date_info = {
-            'date': mock_date.strftime("%d-%m-%Y"),
-            'shift': mock_shift,
-            'is_mock': True
-        }
-        if date_info not in st.session_state.selected_dates:
-            st.session_state.selected_dates.append(date_info)
-            st.success(f"Added {date_info['date']} ({mock_shift})")
-else:
-    # Normal date selection from venue data
-    venue_data = st.session_state.venue_df[
-        st.session_state.venue_df['VENUE'] == selected_venue
-    ]
-    
-    if not venue_data.empty:
-        # Get unique dates for this venue
-        unique_dates = sorted(venue_data['DATE'].dropna().unique())
-        
-        if unique_dates:
-            st.write(f"**Available dates for {selected_venue}:**")
-            
-            # Create a date selection interface
-            selected_date_shifts = []
-            
-            for date_str in unique_dates:
-                with st.expander(f"📅 {date_str}", expanded=False):
-                    date_shifts = venue_data[venue_data['DATE'] == date_str]['SHIFT'].unique()
-                    
-                    # Convert shifts to strings and filter out any NaN values
-                    date_shifts = [str(shift) for shift in date_shifts if pd.notna(shift)]
-                    
-                    for shift in sorted(date_shifts):
-                        if shift:  # Ensure shift is not empty string
-                            shift_key = f"{date_str}_{shift}_{selected_venue}"
-                            selected = st.checkbox(str(shift), key=shift_key)
-                            
-                            if selected:
-                                selected_date_shifts.append({
-                                    'date': date_str,
-                                    'shift': shift,
-                                    'is_mock': False
-                                })
-            
-            if selected_date_shifts:
-                st.session_state.selected_dates = selected_date_shifts
-                st.info(f"✅ Selected {len(selected_date_shifts)} date-shift combinations")
-            else:
-                st.info("No dates selected. Please select at least one date-shift combination.")
-        else:
-            st.warning(f"No dates available for {selected_venue}")
-    else:
-        st.warning(f"No data found for venue: {selected_venue}")
+                        
+                        # Convert shifts to strings and filter out any NaN or empty values
+                        date_shifts = [str(shift) for shift in date_shifts if pd.notna(shift) and str(shift) != '']
+                        
+                        for shift in sorted(date_shifts):
+                            if shift:  # Ensure shift is not empty string
+                                shift_key = f"{date_str}_{shift}_{selected_venue}"
+                                selected = st.checkbox(str(shift), key=shift_key)
+                                
+                                if selected:
+                                    selected_date_shifts.append({
+                                        'date': date_str,
+                                        'shift': shift,
+                                        'is_mock': False
+                                    })
+                
+                if selected_date_shifts:
+                    st.session_state.selected_dates = selected_date_shifts
                     st.info(f"✅ Selected {len(selected_date_shifts)} date-shift combinations")
+                else:
+                    st.info("No dates selected. Please select at least one date-shift combination.")
             else:
                 st.warning(f"No dates available for {selected_venue}")
         else:
@@ -1439,21 +1410,24 @@ def show_ey_personnel():
                 for date_str in unique_dates:
                     # Get all shifts for this date
                     date_shifts = [d['shift'] for d in venue_dates if d['date'] == date_str]
+                    # Filter out empty or NaN shifts
+                    date_shifts = [shift for shift in date_shifts if pd.notna(shift) and str(shift) != '']
                     shift_str = ", ".join(sorted(set(date_shifts)))
                     
-                    # Date selection checkbox
-                    selected = st.checkbox(f"{date_str} ({shift_str})", 
-                                         key=f"ey_date_{venue}_{date_str}")
-                    
-                    if selected:
-                        # Add all shifts for this date
-                        for shift in date_shifts:
-                            selected_date_info.append({
-                                'venue': venue,
-                                'date': date_str,
-                                'shift': shift,
-                                'is_mock': False
-                            })
+                    if shift_str:  # Only show if there are valid shifts
+                        # Date selection checkbox
+                        selected = st.checkbox(f"{date_str} ({shift_str})", 
+                                             key=f"ey_date_{venue}_{date_str}")
+                        
+                        if selected:
+                            # Add all shifts for this date
+                            for shift in date_shifts:
+                                selected_date_info.append({
+                                    'venue': venue,
+                                    'date': date_str,
+                                    'shift': shift,
+                                    'is_mock': False
+                                })
     
     if not selected_date_info:
         st.info("Select dates to allocate EY personnel")
@@ -2974,4 +2948,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
