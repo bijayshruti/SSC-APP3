@@ -107,6 +107,10 @@ def initialize_session_state():
         'date_selection_state': {},
         'expanded_dates': {},
         
+        # EY date selection state
+        'ey_date_selection_state': {},
+        'ey_expanded_dates': {},
+        
         # File upload tracking
         'io_master_loaded': False,
         'venue_master_loaded': False,
@@ -125,6 +129,11 @@ def initialize_session_state():
         'show_ey_upload': False,
         'creating_new_ref_IO': False,
         'creating_new_ref_EY Personnel': False,
+        
+        # Deletion management
+        'selected_allocation_for_deletion': [],
+        'selected_ey_allocation_for_deletion': [],
+        'show_delete_confirmation': False,
         
         # Current menu
         'menu': 'dashboard'
@@ -519,6 +528,90 @@ def check_allocation_conflict(person_name, date, shift, venue, role, allocation_
             return True, f"EY Personnel conflict! {person_name} is already allocated to {existing_venue} on {date} ({shift})."
     
     return False, ""
+
+def delete_allocation(allocation_index, allocation_type="IO"):
+    """Delete an allocation and move to deleted records"""
+    try:
+        if allocation_type == "IO":
+            if allocation_index < 0 or allocation_index >= len(st.session_state.allocation):
+                return False
+            
+            # Get allocation record
+            allocation = st.session_state.allocation[allocation_index]
+            
+            # Add to deleted records
+            deleted_record = {
+                **allocation,
+                'Deletion Timestamp': datetime.now().isoformat(),
+                'Deletion Reason': 'Manual deletion',
+                'Type': 'IO'
+            }
+            st.session_state.deleted_records.append(deleted_record)
+            
+            # Remove from allocations
+            del st.session_state.allocation[allocation_index]
+            
+            # Update serial numbers
+            for idx, alloc in enumerate(st.session_state.allocation):
+                alloc['Sl. No.'] = idx + 1
+            
+            # Update exam data
+            if st.session_state.current_exam_key in st.session_state.exam_data:
+                st.session_state.exam_data[st.session_state.current_exam_key]['io_allocations'] = st.session_state.allocation
+            
+            logging.info(f"Deleted IO allocation: {allocation.get('IO Name', 'Unknown')}")
+            
+        elif allocation_type == "EY":
+            if allocation_index < 0 or allocation_index >= len(st.session_state.ey_allocation):
+                return False
+            
+            # Get allocation record
+            allocation = st.session_state.ey_allocation[allocation_index]
+            
+            # Add to deleted records
+            deleted_record = {
+                **allocation,
+                'Deletion Timestamp': datetime.now().isoformat(),
+                'Deletion Reason': 'Manual deletion',
+                'Type': 'EY Personnel'
+            }
+            st.session_state.deleted_records.append(deleted_record)
+            
+            # Remove from allocations
+            del st.session_state.ey_allocation[allocation_index]
+            
+            # Update serial numbers
+            for idx, alloc in enumerate(st.session_state.ey_allocation):
+                alloc['Sl. No.'] = idx + 1
+            
+            # Update exam data
+            if st.session_state.current_exam_key in st.session_state.exam_data:
+                st.session_state.exam_data[st.session_state.current_exam_key]['ey_allocations'] = st.session_state.ey_allocation
+            
+            logging.info(f"Deleted EY allocation: {allocation.get('EY Personnel', 'Unknown')}")
+        
+        save_all_data()
+        return True
+        
+    except Exception as e:
+        logging.error(f"Error deleting allocation: {str(e)}")
+        return False
+
+def bulk_delete_allocations(indices, allocation_type="IO"):
+    """Delete multiple allocations in bulk"""
+    try:
+        # Sort indices in descending order to avoid index shifting issues
+        indices.sort(reverse=True)
+        
+        deleted_count = 0
+        for idx in indices:
+            if delete_allocation(idx, allocation_type):
+                deleted_count += 1
+        
+        return deleted_count
+    except Exception as e:
+        logging.error(f"Error in bulk deletion: {str(e)}")
+        return 0
 
 # ============================================================================
 # REFERENCE MANAGEMENT - FIXED
@@ -1577,6 +1670,158 @@ def create_date_selector(venue_data, selected_venue):
     
     return selected_date_shifts
 
+def create_ey_date_selector(venue_data, venue_name):
+    """Create enhanced date selection interface for EY allocations"""
+    if venue_data.empty:
+        return []
+    
+    # Get unique dates
+    unique_dates = sorted(venue_data['DATE'].dropna().unique())
+    
+    if not unique_dates:
+        return []
+    
+    # Initialize EY date selection state if not exists
+    if 'ey_date_selection_state' not in st.session_state:
+        st.session_state.ey_date_selection_state = {}
+    
+    if 'ey_expanded_dates' not in st.session_state:
+        st.session_state.ey_expanded_dates = {}
+    
+    # Get venue key for state management
+    venue_key = f"{st.session_state.current_exam_key}_{venue_name}"
+    if venue_key not in st.session_state.ey_date_selection_state:
+        st.session_state.ey_date_selection_state[venue_key] = {}
+    
+    if venue_key not in st.session_state.ey_expanded_dates:
+        st.session_state.ey_expanded_dates[venue_key] = {}
+    
+    selected_date_shifts = []
+    
+    for date_str in unique_dates:
+        # Get shifts for this date
+        date_shifts_data = venue_data[venue_data['DATE'] == date_str]
+        date_shifts = date_shifts_data['SHIFT'].unique()
+        
+        # Convert to strings and filter
+        date_shifts = [str(shift) for shift in date_shifts if pd.notna(shift) and str(shift) != '']
+        
+        if not date_shifts:
+            continue
+        
+        # Initialize date state if not exists
+        date_key = f"{venue_key}_{date_str}"
+        if date_key not in st.session_state.ey_date_selection_state[venue_key]:
+            st.session_state.ey_date_selection_state[venue_key][date_key] = {
+                'all_selected': False,
+                'shifts': {shift: False for shift in date_shifts}
+            }
+        
+        if date_str not in st.session_state.ey_expanded_dates[venue_key]:
+            st.session_state.ey_expanded_dates[venue_key][date_str] = False
+        
+        # Get current state
+        date_state = st.session_state.ey_date_selection_state[venue_key][date_key]
+        is_expanded = st.session_state.ey_expanded_dates[venue_key][date_str]
+        
+        # Calculate selection status
+        selected_shifts = [shift for shift, selected in date_state['shifts'].items() if selected]
+        all_selected = len(selected_shifts) == len(date_shifts)
+        partially_selected = len(selected_shifts) > 0 and not all_selected
+        none_selected = len(selected_shifts) == 0
+        
+        # Determine color based on selection
+        if all_selected:
+            bg_color = "#4CAF50"  # Green
+            border_color = "#388E3C"
+            status_text = "✓ All Selected"
+            emoji = "🟢"
+        elif partially_selected:
+            bg_color = "#FF9800"  # Orange
+            border_color = "#F57C00"
+            status_text = f"✓ {len(selected_shifts)}/{len(date_shifts)} Selected"
+            emoji = "🟠"
+        else:
+            bg_color = "#FFEB3B"  # Yellow
+            border_color = "#FBC02D"
+            status_text = "Not Selected"
+            emoji = "🟡"
+        
+        # Create date header with selection status
+        col1, col2, col3 = st.columns([3, 2, 1])
+        
+        with col1:
+            # Create a styled date header
+            st.markdown(f"""
+                <div style="
+                    background-color: {bg_color};
+                    color: #333;
+                    padding: 10px 15px;
+                    border-radius: 8px;
+                    border: 2px solid {border_color};
+                    margin: 5px 0;
+                    cursor: pointer;
+                    font-weight: bold;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                ">
+                {emoji} <strong>{date_str}</strong> - {status_text}
+                </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            # Single click to select all
+            if st.button(f"🎯 Select All", key=f"ey_select_all_{date_key}", 
+                        use_container_width=True):
+                # Toggle all shifts
+                if all_selected:
+                    # Deselect all
+                    for shift in date_shifts:
+                        date_state['shifts'][shift] = False
+                else:
+                    # Select all
+                    for shift in date_shifts:
+                        date_state['shifts'][shift] = True
+                st.rerun()
+        
+        with col3:
+            # Toggle expand/collapse
+            expand_label = "📖 Show Shifts" if not is_expanded else "📕 Hide Shifts"
+            if st.button(expand_label, key=f"ey_expand_{date_key}", 
+                        use_container_width=True):
+                st.session_state.ey_expanded_dates[venue_key][date_str] = not is_expanded
+                st.rerun()
+        
+        # Show shift selection if expanded
+        if is_expanded:
+            st.markdown("**Select Shifts:**")
+            
+            # Create columns for shifts
+            shift_cols = st.columns(min(4, len(date_shifts)))
+            
+            for idx, shift in enumerate(sorted(date_shifts)):
+                col_idx = idx % len(shift_cols)
+                with shift_cols[col_idx]:
+                    shift_selected = st.checkbox(
+                        f"⏰ {shift}",
+                        value=date_state['shifts'][shift],
+                        key=f"ey_shift_{date_key}_{shift}"
+                    )
+                    date_state['shifts'][shift] = shift_selected
+            
+            st.markdown("---")
+        
+        # Add selected shifts to result
+        for shift, selected in date_state['shifts'].items():
+            if selected:
+                selected_date_shifts.append({
+                    'venue': venue_name,
+                    'date': date_str,
+                    'shift': shift,
+                    'is_mock': False
+                })
+    
+    return selected_date_shifts
+
 # ============================================================================
 # DASHBOARD MODULE
 # ============================================================================
@@ -2276,7 +2521,7 @@ def show_centre_coordinator():
             else:
                 st.error("❌ No allocations made due to conflicts")
     
-    # Current Allocations Display
+    # Current Allocations Display with Deletion Options
     if st.session_state.allocation:
         st.markdown("---")
         st.markdown("### 📋 Current Allocations")
@@ -2287,17 +2532,146 @@ def show_centre_coordinator():
         current_allocations = alloc_df[alloc_df['Exam'] == st.session_state.current_exam_key]
         
         if not current_allocations.empty:
-            # Display table
-            st.dataframe(
-                current_allocations[['Sl. No.', 'IO Name', 'Venue', 'Date', 'Shift', 'Role', 'Mock Test']],
-                use_container_width=True,
-                hide_index=True
-            )
+            # Add checkbox column for selection
+            if 'selected_for_deletion' not in current_allocations.columns:
+                current_allocations = current_allocations.copy()
+                current_allocations['selected_for_deletion'] = False
             
-            # Quick actions
-            col_act1, col_act2, col_act3 = st.columns(3)
+            # Display table with checkboxes
+            st.markdown("**Select allocations to delete:**")
             
-            with col_act1:
+            # Create a form for deletion
+            with st.form(key='delete_allocation_form'):
+                # Create editable dataframe
+                edited_df = st.data_editor(
+                    current_allocations[['selected_for_deletion', 'Sl. No.', 'IO Name', 'Venue', 'Date', 'Shift', 'Role', 'Mock Test']],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "selected_for_deletion": st.column_config.CheckboxColumn(
+                            "Select",
+                            help="Select for deletion",
+                            default=False,
+                        ),
+                        "Sl. No.": st.column_config.NumberColumn(
+                            "S.No.",
+                            help="Serial number",
+                            disabled=True
+                        ),
+                        "IO Name": st.column_config.TextColumn(
+                            "IO Name",
+                            help="Name of IO",
+                            disabled=True
+                        ),
+                        "Venue": st.column_config.TextColumn(
+                            "Venue",
+                            help="Venue name",
+                            disabled=True
+                        ),
+                        "Date": st.column_config.TextColumn(
+                            "Date",
+                            help="Allocation date",
+                            disabled=True
+                        ),
+                        "Shift": st.column_config.TextColumn(
+                            "Shift",
+                            help="Shift timing",
+                            disabled=True
+                        ),
+                        "Role": st.column_config.TextColumn(
+                            "Role",
+                            help="Role assigned",
+                            disabled=True
+                        ),
+                        "Mock Test": st.column_config.CheckboxColumn(
+                            "Mock Test",
+                            help="Mock test allocation",
+                            disabled=True
+                        )
+                    }
+                )
+                
+                # Get selected indices
+                selected_indices = edited_df[edited_df['selected_for_deletion']].index.tolist()
+                
+                col_del1, col_del2, col_del3 = st.columns(3)
+                
+                with col_del1:
+                    delete_submitted = st.form_submit_button("🗑️ Delete Selected")
+                
+                with col_del2:
+                    select_all = st.form_submit_button("📋 Select All")
+                
+                with col_del3:
+                    clear_all = st.form_submit_button("🧹 Clear Selection")
+                
+                if select_all:
+                    # Select all rows
+                    for idx in range(len(current_allocations)):
+                        st.session_state.selected_allocation_for_deletion.append(idx)
+                    st.rerun()
+                
+                if clear_all:
+                    # Clear all selections
+                    st.session_state.selected_allocation_for_deletion = []
+                    st.rerun()
+                
+                if delete_submitted and selected_indices:
+                    # Show confirmation
+                    st.warning(f"⚠️ You are about to delete {len(selected_indices)} allocation(s). This action cannot be undone!")
+                    
+                    if st.button(f"🔥 CONFIRM DELETE {len(selected_indices)} ALLOCATION(S)"):
+                        # Convert DataFrame indices to allocation indices
+                        allocation_indices = []
+                        for df_idx in selected_indices:
+                            if df_idx < len(current_allocations):
+                                sl_no = current_allocations.iloc[df_idx]['Sl. No.']
+                                # Find the allocation with this serial number
+                                for idx, alloc in enumerate(st.session_state.allocation):
+                                    if alloc.get('Sl. No.') == sl_no:
+                                        allocation_indices.append(idx)
+                                        break
+                        
+                        # Delete in bulk
+                        deleted_count = bulk_delete_allocations(allocation_indices, "IO")
+                        
+                        if deleted_count > 0:
+                            st.success(f"✅ Successfully deleted {deleted_count} allocation(s)")
+                            st.session_state.selected_allocation_for_deletion = []
+                            save_all_data()
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to delete allocations")
+            
+            # Individual deletion options
+            st.markdown("#### Quick Individual Deletion")
+            
+            for idx, alloc in enumerate(st.session_state.allocation):
+                if alloc.get('Exam') == st.session_state.current_exam_key:
+                    col_del_quick1, col_del_quick2, col_del_quick3, col_del_quick4 = st.columns([3, 2, 2, 1])
+                    
+                    with col_del_quick1:
+                        st.write(f"{alloc.get('IO Name')} - {alloc.get('Venue')}")
+                    
+                    with col_del_quick2:
+                        st.write(f"{alloc.get('Date')} {alloc.get('Shift')}")
+                    
+                    with col_del_quick3:
+                        st.write(f"{alloc.get('Role')}")
+                    
+                    with col_del_quick4:
+                        if st.button("🗑️", key=f"delete_single_{idx}"):
+                            if delete_allocation(idx, "IO"):
+                                st.success(f"Deleted allocation for {alloc.get('IO Name')}")
+                                st.rerun()
+                            else:
+                                st.error("Failed to delete allocation")
+            
+            # Export options
+            st.markdown("---")
+            col_exp1, col_exp2, col_exp3 = st.columns(3)
+            
+            with col_exp1:
                 if st.button("📤 Export Allocations", use_container_width=True):
                     csv = current_allocations.to_csv(index=False)
                     st.download_button(
@@ -2308,25 +2682,38 @@ def show_centre_coordinator():
                         use_container_width=True
                     )
             
-            with col_act2:
+            with col_exp2:
                 if st.button("🗑️ Clear All Allocations", type="secondary", use_container_width=True):
+                    st.warning("This will delete ALL allocations for this exam!")
                     if st.checkbox("Confirm clear all allocations for this exam"):
+                        # Move to deleted records
+                        for alloc in st.session_state.allocation:
+                            if alloc.get('Exam') == st.session_state.current_exam_key:
+                                deleted_record = {
+                                    **alloc,
+                                    'Deletion Timestamp': datetime.now().isoformat(),
+                                    'Deletion Reason': 'Bulk clear all',
+                                    'Type': 'IO'
+                                }
+                                st.session_state.deleted_records.append(deleted_record)
+                        
+                        # Clear allocations
                         st.session_state.allocation = []
                         exam_key = st.session_state.current_exam_key
                         if exam_key in st.session_state.exam_data:
                             st.session_state.exam_data[exam_key]['io_allocations'] = []
                         save_all_data()
-                        st.success("Allocations cleared!")
+                        st.success("All allocations cleared!")
                         st.rerun()
             
-            with col_act3:
+            with col_exp3:
                 if st.button("📊 Generate Report", use_container_width=True):
                     generate_io_report()
         else:
             st.info("No allocations for current exam")
 
 # ============================================================================
-# EY PERSONNEL MODULE - FIXED
+# EY PERSONNEL MODULE - FIXED WITH PARTIAL SHIFT SELECTION
 # ============================================================================
 
 def show_ey_personnel():
@@ -2412,66 +2799,31 @@ def show_ey_personnel():
     venues = sorted(st.session_state.venue_df['VENUE'].dropna().unique())
     selected_venues = st.multiselect("Select Venues for EY Allocation:", 
                                     venues,
-                                    default=st.session_state.selected_venue if st.session_state.selected_venue in venues else None)
+                                    default=[st.session_state.selected_venue] if st.session_state.selected_venue in venues else None)
     
     if not selected_venues:
         st.info("Select at least one venue to continue")
         return
     
-    # Date Selection
-    st.markdown("### 📅 Date Selection")
+    # Date Selection with Partial Shifts
+    st.markdown("### 📅 Date & Shift Selection")
     
-    # Get all dates from selected venues
-    all_dates = []
-    for venue in selected_venues:
-        venue_data = st.session_state.venue_df[st.session_state.venue_df['VENUE'] == venue]
-        if not venue_data.empty:
-            for _, row in venue_data.iterrows():
-                all_dates.append({
-                    'venue': venue,
-                    'date': row['DATE'],
-                    'shift': row['SHIFT']
-                })
-    
-    if not all_dates:
-        st.warning("No dates available for selected venues")
-        return
-    
-    # Group dates by venue for selection
     selected_date_info = []
     
     for venue in selected_venues:
-        venue_dates = [d for d in all_dates if d['venue'] == venue]
-        if venue_dates:
+        venue_data = st.session_state.venue_df[st.session_state.venue_df['VENUE'] == venue]
+        
+        if not venue_data.empty:
             with st.expander(f"📅 {venue}", expanded=False):
-                # Get unique dates for this venue
-                unique_dates = sorted(set(d['date'] for d in venue_dates))
-                
-                for date_str in unique_dates:
-                    # Get all shifts for this date
-                    date_shifts = [d['shift'] for d in venue_dates if d['date'] == date_str]
-                    # Filter out empty or NaN shifts
-                    date_shifts = [shift for shift in date_shifts if pd.notna(shift) and str(shift) != '']
-                    shift_str = ", ".join(sorted(set(date_shifts)))
-                    
-                    if shift_str:  # Only show if there are valid shifts
-                        # Date selection checkbox
-                        selected = st.checkbox(f"{date_str} ({shift_str})", 
-                                             key=f"ey_date_{venue}_{date_str}")
-                        
-                        if selected:
-                            # Add all shifts for this date
-                            for shift in date_shifts:
-                                selected_date_info.append({
-                                    'venue': venue,
-                                    'date': date_str,
-                                    'shift': shift,
-                                    'is_mock': False
-                                })
+                # Use enhanced date selector for EY
+                venue_date_shifts = create_ey_date_selector(venue_data, venue)
+                selected_date_info.extend(venue_date_shifts)
     
     if not selected_date_info:
-        st.info("Select dates to allocate EY personnel")
+        st.info("Select dates and shifts to allocate EY personnel")
         return
+    
+    st.info(f"✅ Selected {len(selected_date_info)} date-shift combination(s)")
     
     # EY Personnel Selection
     st.markdown("### 👥 EY Personnel Selection")
@@ -2595,7 +2947,7 @@ def show_ey_personnel():
             else:
                 st.error("❌ No allocations made due to conflicts")
     
-    # Current EY Allocations
+    # Current EY Allocations with Deletion Options
     if st.session_state.ey_allocation:
         st.markdown("---")
         st.markdown("### 📋 Current EY Allocations")
@@ -2606,13 +2958,139 @@ def show_ey_personnel():
         current_ey = ey_df[ey_df['Exam'] == st.session_state.current_exam_key]
         
         if not current_ey.empty:
-            st.dataframe(
-                current_ey[['Sl. No.', 'EY Personnel', 'Venue', 'Date', 'Shift', 'Rate (₹)']],
-                use_container_width=True,
-                hide_index=True
-            )
+            # Add checkbox column for selection
+            if 'selected_for_deletion' not in current_ey.columns:
+                current_ey = current_ey.copy()
+                current_ey['selected_for_deletion'] = False
+            
+            # Display table with checkboxes
+            st.markdown("**Select allocations to delete:**")
+            
+            # Create a form for deletion
+            with st.form(key='delete_ey_allocation_form'):
+                # Create editable dataframe
+                edited_df = st.data_editor(
+                    current_ey[['selected_for_deletion', 'Sl. No.', 'EY Personnel', 'Venue', 'Date', 'Shift', 'Rate (₹)']],
+                    use_container_width=True,
+                    hide_index=True,
+                    column_config={
+                        "selected_for_deletion": st.column_config.CheckboxColumn(
+                            "Select",
+                            help="Select for deletion",
+                            default=False,
+                        ),
+                        "Sl. No.": st.column_config.NumberColumn(
+                            "S.No.",
+                            help="Serial number",
+                            disabled=True
+                        ),
+                        "EY Personnel": st.column_config.TextColumn(
+                            "EY Personnel",
+                            help="Name of EY personnel",
+                            disabled=True
+                        ),
+                        "Venue": st.column_config.TextColumn(
+                            "Venue",
+                            help="Venue name",
+                            disabled=True
+                        ),
+                        "Date": st.column_config.TextColumn(
+                            "Date",
+                            help="Allocation date",
+                            disabled=True
+                        ),
+                        "Shift": st.column_config.TextColumn(
+                            "Shift",
+                            help="Shift timing",
+                            disabled=True
+                        ),
+                        "Rate (₹)": st.column_config.NumberColumn(
+                            "Rate",
+                            help="Daily rate",
+                            disabled=True,
+                            format="₹%d"
+                        )
+                    }
+                )
+                
+                # Get selected indices
+                selected_indices = edited_df[edited_df['selected_for_deletion']].index.tolist()
+                
+                col_del1, col_del2, col_del3 = st.columns(3)
+                
+                with col_del1:
+                    delete_submitted = st.form_submit_button("🗑️ Delete Selected")
+                
+                with col_del2:
+                    select_all = st.form_submit_button("📋 Select All")
+                
+                with col_del3:
+                    clear_all = st.form_submit_button("🧹 Clear Selection")
+                
+                if select_all:
+                    # Select all rows
+                    for idx in range(len(current_ey)):
+                        st.session_state.selected_ey_allocation_for_deletion.append(idx)
+                    st.rerun()
+                
+                if clear_all:
+                    # Clear all selections
+                    st.session_state.selected_ey_allocation_for_deletion = []
+                    st.rerun()
+                
+                if delete_submitted and selected_indices:
+                    # Show confirmation
+                    st.warning(f"⚠️ You are about to delete {len(selected_indices)} EY allocation(s). This action cannot be undone!")
+                    
+                    if st.button(f"🔥 CONFIRM DELETE {len(selected_indices)} EY ALLOCATION(S)"):
+                        # Convert DataFrame indices to allocation indices
+                        allocation_indices = []
+                        for df_idx in selected_indices:
+                            if df_idx < len(current_ey):
+                                sl_no = current_ey.iloc[df_idx]['Sl. No.']
+                                # Find the allocation with this serial number
+                                for idx, alloc in enumerate(st.session_state.ey_allocation):
+                                    if alloc.get('Sl. No.') == sl_no:
+                                        allocation_indices.append(idx)
+                                        break
+                        
+                        # Delete in bulk
+                        deleted_count = bulk_delete_allocations(allocation_indices, "EY")
+                        
+                        if deleted_count > 0:
+                            st.success(f"✅ Successfully deleted {deleted_count} EY allocation(s)")
+                            st.session_state.selected_ey_allocation_for_deletion = []
+                            save_all_data()
+                            st.rerun()
+                        else:
+                            st.error("❌ Failed to delete EY allocations")
+            
+            # Individual deletion options
+            st.markdown("#### Quick Individual Deletion")
+            
+            for idx, alloc in enumerate(st.session_state.ey_allocation):
+                if alloc.get('Exam') == st.session_state.current_exam_key:
+                    col_del_quick1, col_del_quick2, col_del_quick3, col_del_quick4 = st.columns([3, 2, 2, 1])
+                    
+                    with col_del_quick1:
+                        st.write(f"{alloc.get('EY Personnel')} - {alloc.get('Venue')}")
+                    
+                    with col_del_quick2:
+                        st.write(f"{alloc.get('Date')} {alloc.get('Shift')}")
+                    
+                    with col_del_quick3:
+                        st.write(f"₹{alloc.get('Rate (₹)', 0)}")
+                    
+                    with col_del_quick4:
+                        if st.button("🗑️", key=f"delete_ey_single_{idx}"):
+                            if delete_allocation(idx, "EY"):
+                                st.success(f"Deleted allocation for {alloc.get('EY Personnel')}")
+                                st.rerun()
+                            else:
+                                st.error("Failed to delete allocation")
             
             # Summary statistics
+            st.markdown("---")
             unique_dates = current_ey['Date'].nunique()
             total_cost = unique_dates * st.session_state.remuneration_rates['ey_personnel']
             unique_personnel = current_ey['EY Personnel'].nunique()
