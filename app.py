@@ -5,6 +5,7 @@ Streamlit Web Application
 Designed by Bijay Paswan
 
 ENHANCED VERSION WITH COMPREHENSIVE DELETION & RECORD MANAGEMENT SYSTEM
+COMPLETE UPLOAD FUNCTIONALITY AND REPORT DOWNLOADS ADDED
 """
 
 import streamlit as st
@@ -67,6 +68,552 @@ DEFAULT_RATES = {
 }
 
 # ============================================================================
+# FILE UPLOAD & DATA LOADING FUNCTIONS
+# ============================================================================
+
+def upload_io_master():
+    """Upload IO Master Data file"""
+    st.markdown("### 📤 Upload IO Master Data")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        io_file = st.file_uploader(
+            "Choose IO Master Excel/CSV file", 
+            type=['xlsx', 'xls', 'csv'],
+            key="io_master_uploader",
+            help="Upload IO master data with columns: NAME, AREA, MOBILE, EMAIL, DESIGNATION, etc."
+        )
+    
+    with col2:
+        st.markdown("**Required Columns:**")
+        st.write("- NAME")
+        st.write("- AREA") 
+        st.write("- MOBILE")
+        st.write("- EMAIL")
+        st.write("- DESIGNATION")
+    
+    if io_file is not None:
+        try:
+            # Read file based on extension
+            if io_file.name.endswith('.csv'):
+                df = pd.read_csv(io_file)
+            else:
+                df = pd.read_excel(io_file)
+            
+            # Check required columns
+            required_cols = ['NAME', 'AREA', 'MOBILE', 'EMAIL', 'DESIGNATION']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            
+            if missing_cols:
+                st.error(f"❌ Missing required columns: {', '.join(missing_cols)}")
+                return False
+            
+            # Store in session state
+            st.session_state.io_df = df
+            st.session_state.io_master_loaded = True
+            
+            # Show success message with details
+            st.success(f"✅ IO Master Data Loaded Successfully!")
+            with st.expander("📊 Data Preview"):
+                st.write(f"**Total Records:** {len(df)}")
+                st.write(f"**Areas:** {', '.join(df['AREA'].unique()[:5])}{'...' if len(df['AREA'].unique()) > 5 else ''}")
+                st.dataframe(df.head(10), use_container_width=True)
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"❌ Error loading file: {str(e)}")
+            return False
+    
+    return None
+
+def upload_venue_master():
+    """Upload Venue Master Data file"""
+    st.markdown("### 📤 Upload Venue Master Data")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        venue_file = st.file_uploader(
+            "Choose Venue Master Excel/CSV file", 
+            type=['xlsx', 'xls', 'csv'],
+            key="venue_master_uploader",
+            help="Upload venue data with columns: VENUE, DATE, SHIFT, CENTRE_CODE, etc."
+        )
+    
+    with col2:
+        st.markdown("**Required Columns:**")
+        st.write("- VENUE")
+        st.write("- DATE (DD-MM-YYYY)")
+        st.write("- SHIFT")
+        st.write("- CENTRE_CODE")
+        st.write("- CENTRE NAME")
+    
+    if venue_file is not None:
+        try:
+            # Read file based on extension
+            if venue_file.name.endswith('.csv'):
+                df = pd.read_csv(venue_file)
+            else:
+                df = pd.read_excel(venue_file)
+            
+            # Check required columns
+            required_cols = ['VENUE', 'DATE', 'SHIFT', 'CENTRE_CODE', 'CENTRE NAME']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            
+            if missing_cols:
+                st.error(f"❌ Missing required columns: {', '.join(missing_cols)}")
+                return False
+            
+            # Convert date format if needed
+            if 'DATE' in df.columns:
+                try:
+                    # Try to convert various date formats
+                    df['DATE'] = pd.to_datetime(df['DATE']).dt.strftime('%d-%m-%Y')
+                except:
+                    pass
+            
+            # Store in session state
+            st.session_state.venue_df = df
+            st.session_state.venue_master_loaded = True
+            
+            # Show success message with details
+            st.success(f"✅ Venue Master Data Loaded Successfully!")
+            with st.expander("📊 Data Preview"):
+                st.write(f"**Total Records:** {len(df)}")
+                st.write(f"**Unique Venues:** {len(df['VENUE'].unique())}")
+                st.write(f"**Date Range:** {df['DATE'].min()} to {df['DATE'].max()}")
+                st.dataframe(df.head(10), use_container_width=True)
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"❌ Error loading file: {str(e)}")
+            return False
+    
+    return None
+
+def upload_ey_master():
+    """Upload EY Master Data file"""
+    st.markdown("### 📤 Upload EY Personnel Master Data")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        ey_file = st.file_uploader(
+            "Choose EY Master Excel/CSV file", 
+            type=['xlsx', 'xls', 'csv'],
+            key="ey_master_uploader",
+            help="Upload EY personnel data with columns: NAME, MOBILE, EMAIL, ID_NUMBER, etc."
+        )
+    
+    with col2:
+        st.markdown("**Required Columns:**")
+        st.write("- NAME")
+        st.write("- MOBILE")
+        st.write("- EMAIL")
+        st.write("- ID_NUMBER")
+        st.write("- DESIGNATION")
+    
+    if ey_file is not None:
+        try:
+            # Read file based on extension
+            if ey_file.name.endswith('.csv'):
+                df = pd.read_csv(ey_file)
+            else:
+                df = pd.read_excel(ey_file)
+            
+            # Check required columns
+            required_cols = ['NAME', 'MOBILE', 'EMAIL', 'ID_NUMBER', 'DESIGNATION']
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            
+            if missing_cols:
+                st.error(f"❌ Missing required columns: {', '.join(missing_cols)}")
+                return False
+            
+            # Store in session state
+            st.session_state.ey_df = df
+            st.session_state.ey_master_loaded = True
+            
+            # Show success message with details
+            st.success(f"✅ EY Personnel Master Data Loaded Successfully!")
+            with st.expander("📊 Data Preview"):
+                st.write(f"**Total Records:** {len(df)}")
+                st.write(f"**Unique Universities:** {len(df['UNIVERSITY'].unique()) if 'UNIVERSITY' in df.columns else 'N/A'}")
+                st.dataframe(df.head(10), use_container_width=True)
+            
+            return True
+            
+        except Exception as e:
+            st.error(f"❌ Error loading file: {str(e)}")
+            return False
+    
+    return None
+
+# ============================================================================
+# REPORT EXPORT FUNCTIONS
+# ============================================================================
+
+def export_io_report_to_excel(allocations, exam_key):
+    """Export IO report to Excel with enhanced formatting"""
+    try:
+        # Create workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "IO Allocations Report"
+        
+        # Add title
+        ws.merge_cells('A1:K1')
+        title_cell = ws.cell(row=1, column=1, value=f"IO ALLOCATIONS REPORT - {exam_key}")
+        title_cell.font = Font(size=14, bold=True, color="FFFFFF")
+        title_cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+        title_cell.alignment = Alignment(horizontal='center')
+        
+        # Add export timestamp
+        ws.merge_cells('A2:K2')
+        timestamp_cell = ws.cell(row=2, column=1, value=f"Exported on: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
+        timestamp_cell.font = Font(italic=True)
+        timestamp_cell.alignment = Alignment(horizontal='center')
+        
+        # Add headers
+        headers = ['Sl. No.', 'IO Name', 'Area', 'Designation', 'Venue', 'Date', 'Shift', 'Role', 'Rate (₹)', 'Order No.', 'Mock Test']
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=3, column=col_idx, value=header)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
+            cell.font = Font(color="FFFFFF", bold=True)
+            cell.alignment = Alignment(horizontal='center')
+        
+        # Add data
+        total_cost = 0
+        for row_idx, alloc in enumerate(allocations, 4):
+            ws.cell(row=row_idx, column=1, value=alloc.get('Sl. No.', ''))
+            ws.cell(row=row_idx, column=2, value=alloc.get('IO Name', ''))
+            ws.cell(row=row_idx, column=3, value=alloc.get('Area', ''))
+            ws.cell(row=row_idx, column=4, value=alloc.get('Designation', ''))
+            ws.cell(row=row_idx, column=5, value=alloc.get('Venue', ''))
+            ws.cell(row=row_idx, column=6, value=alloc.get('Date', ''))
+            ws.cell(row=row_idx, column=7, value=alloc.get('Shift', ''))
+            ws.cell(row=row_idx, column=8, value=alloc.get('Role', ''))
+            
+            rate = alloc.get('Rate (₹)', 0)
+            ws.cell(row=row_idx, column=9, value=rate)
+            ws.cell(row=row_idx, column=9).number_format = '#,##0'
+            
+            ws.cell(row=row_idx, column=10, value=alloc.get('Order No.', ''))
+            ws.cell(row=row_idx, column=11, value='Yes' if alloc.get('Mock Test', False) else 'No')
+            
+            total_cost += rate
+        
+        # Add summary row
+        summary_row = len(allocations) + 4
+        ws.cell(row=summary_row, column=8, value="TOTAL COST:").font = Font(bold=True)
+        ws.cell(row=summary_row, column=9, value=total_cost)
+        ws.cell(row=summary_row, column=9).font = Font(bold=True)
+        ws.cell(row=summary_row, column=9).number_format = '#,##0'
+        
+        # Add statistics
+        stats_row = summary_row + 2
+        ws.cell(row=stats_row, column=1, value="SUMMARY STATISTICS").font = Font(bold=True, size=12)
+        ws.cell(row=stats_row+1, column=1, value="Total Allocations:")
+        ws.cell(row=stats_row+1, column=2, value=len(allocations))
+        ws.cell(row=stats_row+2, column=1, value="Unique IOs:")
+        ws.cell(row=stats_row+2, column=2, value=len(set(a.get('IO Name') for a in allocations)))
+        ws.cell(row=stats_row+3, column=1, value="Unique Venues:")
+        ws.cell(row=stats_row+3, column=2, value=len(set(a.get('Venue') for a in allocations)))
+        
+        # Auto-size columns
+        for column in ws.columns:
+            max_length = 0
+            column_letter = get_column_letter(column[0].column)
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Add borders
+        thin_border = Border(left=Side(style='thin'), 
+                           right=Side(style='thin'), 
+                           top=Side(style='thin'), 
+                           bottom=Side(style='thin'))
+        
+        for row in ws.iter_rows(min_row=3, max_row=summary_row, min_col=1, max_col=11):
+            for cell in row:
+                cell.border = thin_border
+        
+        # Save to bytes
+        excel_buffer = BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
+        
+        # Create download link
+        filename = f"IO_Allocations_{exam_key.replace(' ', '_').replace('-', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        b64 = base64.b64encode(excel_buffer.read()).decode()
+        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">📥 Download Excel File</a>'
+        st.markdown(href, unsafe_allow_html=True)
+        
+        st.success(f"✅ Excel file '{filename}' generated successfully!")
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Error generating Excel file: {str(e)}")
+        return False
+
+def export_ey_report_to_excel(allocations, exam_key):
+    """Export EY report to Excel"""
+    try:
+        # Create workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "EY Allocations Report"
+        
+        # Add title
+        ws.merge_cells('A1:J1')
+        title_cell = ws.cell(row=1, column=1, value=f"EY PERSONNEL ALLOCATIONS REPORT - {exam_key}")
+        title_cell.font = Font(size=14, bold=True, color="FFFFFF")
+        title_cell.fill = PatternFill(start_color="00B050", end_color="00B050", fill_type="solid")
+        title_cell.alignment = Alignment(horizontal='center')
+        
+        # Add export timestamp
+        ws.merge_cells('A2:J2')
+        timestamp_cell = ws.cell(row=2, column=1, value=f"Exported on: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
+        timestamp_cell.font = Font(italic=True)
+        timestamp_cell.alignment = Alignment(horizontal='center')
+        
+        # Add headers
+        headers = ['Sl. No.', 'EY Personnel', 'ID Number', 'University', 'Department', 'Designation', 'Venue', 'Date', 'Shift', 'Rate (₹)']
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=3, column=col_idx, value=header)
+            cell.font = Font(bold=True)
+            cell.fill = PatternFill(start_color="92D050", end_color="92D050", fill_type="solid")
+            cell.font = Font(color="FFFFFF", bold=True)
+            cell.alignment = Alignment(horizontal='center')
+        
+        # Add data
+        total_cost = 0
+        for row_idx, alloc in enumerate(allocations, 4):
+            ws.cell(row=row_idx, column=1, value=alloc.get('Sl. No.', ''))
+            ws.cell(row=row_idx, column=2, value=alloc.get('EY Personnel', ''))
+            ws.cell(row=row_idx, column=3, value=alloc.get('ID Number', ''))
+            ws.cell(row=row_idx, column=4, value=alloc.get('University', ''))
+            ws.cell(row=row_idx, column=5, value=alloc.get('Department', ''))
+            ws.cell(row=row_idx, column=6, value=alloc.get('Designation', ''))
+            ws.cell(row=row_idx, column=7, value=alloc.get('Venue', ''))
+            ws.cell(row=row_idx, column=8, value=alloc.get('Date', ''))
+            ws.cell(row=row_idx, column=9, value=alloc.get('Shift', ''))
+            
+            rate = alloc.get('Rate (₹)', 0)
+            ws.cell(row=row_idx, column=10, value=rate)
+            ws.cell(row=row_idx, column=10).number_format = '#,##0'
+            
+            total_cost += rate
+        
+        # Add summary row
+        summary_row = len(allocations) + 4
+        ws.cell(row=summary_row, column=9, value="TOTAL COST:").font = Font(bold=True)
+        ws.cell(row=summary_row, column=10, value=total_cost)
+        ws.cell(row=summary_row, column=10).font = Font(bold=True)
+        ws.cell(row=summary_row, column=10).number_format = '#,##0'
+        
+        # Auto-size columns
+        for column in ws.columns:
+            max_length = 0
+            column_letter = get_column_letter(column[0].column)
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Save to bytes
+        excel_buffer = BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
+        
+        # Create download link
+        filename = f"EY_Allocations_{exam_key.replace(' ', '_').replace('-', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        b64 = base64.b64encode(excel_buffer.read()).decode()
+        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">📥 Download Excel File</a>'
+        st.markdown(href, unsafe_allow_html=True)
+        
+        st.success(f"✅ Excel file '{filename}' generated successfully!")
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Error generating EY Excel file: {str(e)}")
+        return False
+
+def export_financial_summary_to_excel(exam_key, io_allocations, ey_allocations):
+    """Export financial summary to Excel"""
+    try:
+        # Create workbook
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "Financial Summary"
+        
+        # Add title
+        ws.merge_cells('A1:D1')
+        title_cell = ws.cell(row=1, column=1, value=f"FINANCIAL SUMMARY REPORT - {exam_key}")
+        title_cell.font = Font(size=14, bold=True, color="FFFFFF")
+        title_cell.fill = PatternFill(start_color="7030A0", end_color="7030A0", fill_type="solid")
+        title_cell.alignment = Alignment(horizontal='center')
+        
+        # Add export timestamp
+        ws.merge_cells('A2:D2')
+        timestamp_cell = ws.cell(row=2, column=1, value=f"Exported on: {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
+        timestamp_cell.font = Font(italic=True)
+        timestamp_cell.alignment = Alignment(horizontal='center')
+        
+        # IO Costs by Role
+        ws.cell(row=3, column=1, value="IO COSTS BY ROLE").font = Font(bold=True, size=12)
+        ws.cell(row=4, column=1, value="Role").font = Font(bold=True)
+        ws.cell(row=4, column=2, value="Allocations").font = Font(bold=True)
+        ws.cell(row=4, column=3, value="Total Cost (₹)").font = Font(bold=True)
+        ws.cell(row=4, column=4, value="Percentage").font = Font(bold=True)
+        
+        io_costs_by_role = {}
+        for alloc in io_allocations:
+            role = alloc.get('Role', 'Unknown')
+            cost = alloc.get('Rate (₹)', 0)
+            io_costs_by_role[role] = io_costs_by_role.get(role, {'count': 0, 'cost': 0})
+            io_costs_by_role[role]['count'] += 1
+            io_costs_by_role[role]['cost'] += cost
+        
+        total_io_cost = sum(data['cost'] for data in io_costs_by_role.values())
+        total_ey_cost = sum(a.get('Rate (₹)', 0) for a in ey_allocations)
+        total_cost = total_io_cost + total_ey_cost
+        
+        row = 5
+        for role, data in io_costs_by_role.items():
+            ws.cell(row=row, column=1, value=role)
+            ws.cell(row=row, column=2, value=data['count'])
+            ws.cell(row=row, column=3, value=data['cost'])
+            ws.cell(row=row, column=3).number_format = '#,##0'
+            percentage = (data['cost'] / total_io_cost * 100) if total_io_cost > 0 else 0
+            ws.cell(row=row, column=4, value=f"{percentage:.1f}%")
+            row += 1
+        
+        # EY Costs
+        ey_start_row = row + 2
+        ws.cell(row=ey_start_row, column=1, value="EY PERSONNEL COSTS").font = Font(bold=True, size=12)
+        ws.cell(row=ey_start_row+1, column=1, value="Total EY Allocations:").font = Font(bold=True)
+        ws.cell(row=ey_start_row+1, column=2, value=len(ey_allocations))
+        ws.cell(row=ey_start_row+2, column=1, value="Total EY Cost:").font = Font(bold=True)
+        ws.cell(row=ey_start_row+2, column=2, value=total_ey_cost)
+        ws.cell(row=ey_start_row+2, column=2).number_format = '#,##0'
+        ws.cell(row=ey_start_row+3, column=1, value="Percentage of Total:").font = Font(bold=True)
+        ey_percentage = (total_ey_cost / total_cost * 100) if total_cost > 0 else 0
+        ws.cell(row=ey_start_row+3, column=2, value=f"{ey_percentage:.1f}%")
+        
+        # Grand Total
+        total_start_row = ey_start_row + 5
+        ws.cell(row=total_start_row, column=1, value="GRAND TOTAL").font = Font(bold=True, size=12, color="FF0000")
+        ws.cell(row=total_start_row+1, column=1, value="Total IO Cost:").font = Font(bold=True)
+        ws.cell(row=total_start_row+1, column=2, value=total_io_cost)
+        ws.cell(row=total_start_row+1, column=2).number_format = '#,##0'
+        ws.cell(row=total_start_row+2, column=1, value="Total EY Cost:").font = Font(bold=True)
+        ws.cell(row=total_start_row+2, column=2, value=total_ey_cost)
+        ws.cell(row=total_start_row+2, column=2).number_format = '#,##0'
+        ws.cell(row=total_start_row+3, column=1, value="TOTAL COST:").font = Font(bold=True, size=12)
+        ws.cell(row=total_start_row+3, column=2, value=total_cost)
+        ws.cell(row=total_start_row+3, column=2).font = Font(bold=True, size=12, color="FF0000")
+        ws.cell(row=total_start_row+3, column=2).number_format = '#,##0'
+        
+        # Auto-size columns
+        for column in ws.columns:
+            max_length = 0
+            column_letter = get_column_letter(column[0].column)
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = min(max_length + 2, 50)
+            ws.column_dimensions[column_letter].width = adjusted_width
+        
+        # Save to bytes
+        excel_buffer = BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
+        
+        # Create download link
+        filename = f"Financial_Summary_{exam_key.replace(' ', '_').replace('-', '_')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        b64 = base64.b64encode(excel_buffer.read()).decode()
+        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">📥 Download Excel File</a>'
+        st.markdown(href, unsafe_allow_html=True)
+        
+        st.success(f"✅ Financial Summary Excel file '{filename}' generated successfully!")
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Error generating Financial Summary Excel file: {str(e)}")
+        return False
+
+def export_all_data_to_excel():
+    """Export all system data to Excel"""
+    try:
+        # Create workbook with multiple sheets
+        wb = Workbook()
+        
+        # Remove default sheet
+        wb.remove(wb.active)
+        
+        # Add sheets for different data
+        sheets_data = {
+            'IO Allocations': st.session_state.allocation,
+            'EY Allocations': st.session_state.ey_allocation,
+            'Exam Summary': [],
+            'Financial Summary': []
+        }
+        
+        for sheet_name, data in sheets_data.items():
+            ws = wb.create_sheet(title=sheet_name)
+            
+            # Add title
+            ws.merge_cells('A1:Z1')
+            title_cell = ws.cell(row=1, column=1, value=f"{sheet_name.upper()} - {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
+            title_cell.font = Font(size=14, bold=True, color="FFFFFF")
+            
+            # Set title color based on sheet
+            if sheet_name == 'IO Allocations':
+                title_cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            elif sheet_name == 'EY Allocations':
+                title_cell.fill = PatternFill(start_color="00B050", end_color="00B050", fill_type="solid")
+            elif sheet_name == 'Financial Summary':
+                title_cell.fill = PatternFill(start_color="7030A0", end_color="7030A0", fill_type="solid")
+            else:
+                title_cell.fill = PatternFill(start_color="FFC000", end_color="FFC000", fill_type="solid")
+            
+            title_cell.alignment = Alignment(horizontal='center')
+        
+        # Save to bytes
+        excel_buffer = BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
+        
+        # Create download link
+        filename = f"Complete_System_Data_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        b64 = base64.b64encode(excel_buffer.read()).decode()
+        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="{filename}">📥 Download Complete System Data (Excel)</a>'
+        st.markdown(href, unsafe_allow_html=True)
+        
+        st.success(f"✅ Complete System Data Excel file '{filename}' generated successfully!")
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Error generating Complete System Data Excel file: {str(e)}")
+        return False
+
+# ============================================================================
 # MISSING FUNCTIONS THAT WERE REFERENCED BUT NOT DEFINED
 # ============================================================================
 
@@ -80,6 +627,28 @@ def show_dashboard():
             <p>Enhanced Version with Comprehensive Deletion & Record Management</p>
         </div>
     """, unsafe_allow_html=True)
+    
+    # Data upload quick access
+    st.markdown("### 📤 Quick Data Upload")
+    col_upload1, col_upload2, col_upload3 = st.columns(3)
+    
+    with col_upload1:
+        if st.button("📥 Upload IO Data", use_container_width=True, key="dashboard_upload_io"):
+            st.session_state.show_io_upload = True
+            st.session_state.menu = "data_upload"
+            st.rerun()
+    
+    with col_upload2:
+        if st.button("📥 Upload Venue Data", use_container_width=True, key="dashboard_upload_venue"):
+            st.session_state.show_venue_upload = True
+            st.session_state.menu = "data_upload"
+            st.rerun()
+    
+    with col_upload3:
+        if st.button("📥 Upload EY Data", use_container_width=True, key="dashboard_upload_ey"):
+            st.session_state.show_ey_upload = True
+            st.session_state.menu = "data_upload"
+            st.rerun()
     
     # Quick stats
     col1, col2, col3, col4 = st.columns(4)
@@ -123,6 +692,28 @@ def show_dashboard():
         if st.button("📊 View Reports", use_container_width=True, key="dashboard_reports"):
             st.session_state.menu = "reports"
             st.rerun()
+    
+    # Data status
+    st.markdown("### 📁 Data Status")
+    col_status1, col_status2, col_status3 = st.columns(3)
+    
+    with col_status1:
+        if st.session_state.io_master_loaded:
+            st.success(f"✅ IO Data: {len(st.session_state.io_df)} records")
+        else:
+            st.error("❌ IO Data: Not Loaded")
+    
+    with col_status2:
+        if st.session_state.venue_master_loaded:
+            st.success(f"✅ Venue Data: {len(st.session_state.venue_df)} records")
+        else:
+            st.error("❌ Venue Data: Not Loaded")
+    
+    with col_status3:
+        if st.session_state.ey_master_loaded:
+            st.success(f"✅ EY Data: {len(st.session_state.ey_df)} records")
+        else:
+            st.error("❌ EY Data: Not Loaded")
     
     # Recent activity
     st.markdown("### 📋 Recent Activity")
@@ -1539,16 +2130,38 @@ def show_centre_coordinator():
     # Check if master data is loaded
     if not st.session_state.io_master_loaded:
         st.error("❌ IO Master data not loaded!")
-        if st.button("📥 Load Default IO Data"):
-            load_default_master_data()
-            st.rerun()
+        
+        col_upload1, col_upload2 = st.columns([2, 1])
+        
+        with col_upload1:
+            if st.button("📤 Upload IO Master Data", use_container_width=True, key="io_upload_btn"):
+                st.session_state.show_io_upload = True
+                st.session_state.menu = "data_upload"
+                st.rerun()
+        
+        with col_upload2:
+            if st.button("📥 Load Default IO Data", use_container_width=True, key="load_default_io"):
+                load_default_master_data()
+                st.rerun()
+        
         return
     
     if not st.session_state.venue_master_loaded:
         st.error("❌ Venue Master data not loaded!")
-        if st.button("📥 Load Default Venue Data"):
-            load_default_master_data()
-            st.rerun()
+        
+        col_upload1, col_upload2 = st.columns([2, 1])
+        
+        with col_upload1:
+            if st.button("📤 Upload Venue Master Data", use_container_width=True, key="venue_upload_btn"):
+                st.session_state.show_venue_upload = True
+                st.session_state.menu = "data_upload"
+                st.rerun()
+        
+        with col_upload2:
+            if st.button("📥 Load Default Venue Data", use_container_width=True, key="load_default_venue"):
+                load_default_master_data()
+                st.rerun()
+        
         return
     
     # Main allocation interface
@@ -1942,16 +2555,38 @@ def show_ey_personnel():
     # Check if master data is loaded
     if not st.session_state.ey_master_loaded:
         st.error("❌ EY Personnel Master data not loaded!")
-        if st.button("📥 Load Default EY Data"):
-            load_default_master_data()
-            st.rerun()
+        
+        col_upload1, col_upload2 = st.columns([2, 1])
+        
+        with col_upload1:
+            if st.button("📤 Upload EY Master Data", use_container_width=True, key="ey_upload_btn"):
+                st.session_state.show_ey_upload = True
+                st.session_state.menu = "data_upload"
+                st.rerun()
+        
+        with col_upload2:
+            if st.button("📥 Load Default EY Data", use_container_width=True, key="load_default_ey"):
+                load_default_master_data()
+                st.rerun()
+        
         return
     
     if not st.session_state.venue_master_loaded:
         st.error("❌ Venue Master data not loaded!")
-        if st.button("📥 Load Default Venue Data"):
-            load_default_master_data()
-            st.rerun()
+        
+        col_upload1, col_upload2 = st.columns([2, 1])
+        
+        with col_upload1:
+            if st.button("📤 Upload Venue Master Data", use_container_width=True, key="venue_upload_btn_ey"):
+                st.session_state.show_venue_upload = True
+                st.session_state.menu = "data_upload"
+                st.rerun()
+        
+        with col_upload2:
+            if st.button("📥 Load Default Venue Data", use_container_width=True, key="load_default_venue_ey"):
+                load_default_master_data()
+                st.rerun()
+        
         return
     
     # Main allocation interface
@@ -2311,7 +2946,7 @@ def show_ey_reference_creation_dialog():
             st.rerun()
 
 # ============================================================================
-# REPORTS MODULE
+# REPORTS MODULE WITH EXPORT FUNCTIONALITY
 # ============================================================================
 
 def show_reports():
@@ -2321,7 +2956,7 @@ def show_reports():
         <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #ff7e5f 0%, #feb47b 100%); 
                  color: white; border-radius: 10px; margin-bottom: 30px;'>
             <h1>📊 REPORTS & ANALYTICS</h1>
-            <p>Comprehensive Allocation Reports</p>
+            <p>Comprehensive Allocation Reports with Export Options</p>
         </div>
     """, unsafe_allow_html=True)
     
@@ -2357,6 +2992,30 @@ def show_summary_dashboard(exam_key):
     # Get allocations for current exam
     io_allocations = [a for a in st.session_state.allocation if a.get('Exam') == exam_key]
     ey_allocations = [a for a in st.session_state.ey_allocation if a.get('Exam') == exam_key]
+    
+    # Export options
+    col_export1, col_export2, col_export3 = st.columns(3)
+    
+    with col_export1:
+        if st.button("📄 Export IO Report", use_container_width=True, key="export_io_summary"):
+            if io_allocations:
+                export_io_report_to_excel(io_allocations, exam_key)
+            else:
+                st.warning("No IO allocations to export")
+    
+    with col_export2:
+        if st.button("📄 Export EY Report", use_container_width=True, key="export_ey_summary"):
+            if ey_allocations:
+                export_ey_report_to_excel(ey_allocations, exam_key)
+            else:
+                st.warning("No EY allocations to export")
+    
+    with col_export3:
+        if st.button("💰 Export Financial Summary", use_container_width=True, key="export_financial_summary"):
+            if io_allocations or ey_allocations:
+                export_financial_summary_to_excel(exam_key, io_allocations, ey_allocations)
+            else:
+                st.warning("No allocations to export")
     
     # Summary metrics
     col1, col2, col3, col4 = st.columns(4)
@@ -2456,6 +3115,12 @@ def show_io_report(exam_key):
         st.info("No IO allocations for this exam")
         return
     
+    # Export option at the top
+    col_export, _ = st.columns([1, 3])
+    with col_export:
+        if st.button("📄 Export to Excel", type="primary", use_container_width=True, key="export_io_report"):
+            export_io_report_to_excel(io_allocations, exam_key)
+    
     # Filters
     col_filter1, col_filter2, col_filter3 = st.columns(3)
     
@@ -2536,80 +3201,6 @@ def show_io_report(exam_key):
         with col_sum4:
             days_covered = len(set(a.get('Date') for a in filtered_allocations))
             st.metric("Days Covered", days_covered)
-        
-        # Export options
-        st.markdown("#### 📤 Export Options")
-        col_export1, col_export2 = st.columns(2)
-        
-        with col_export1:
-            if st.button("📄 Export to Excel", use_container_width=True):
-                export_io_report_to_excel(filtered_allocations, exam_key)
-        
-        with col_export2:
-            if st.button("📊 Export Chart", use_container_width=True):
-                export_io_charts(filtered_allocations)
-
-def export_io_report_to_excel(allocations, exam_key):
-    """Export IO report to Excel"""
-    try:
-        # Create workbook
-        wb = Workbook()
-        ws = wb.active
-        ws.title = "IO Allocations Report"
-        
-        # Add headers
-        headers = ['Sl. No.', 'IO Name', 'Area', 'Designation', 'Venue', 'Date', 'Shift', 'Role', 'Rate (₹)', 'Order No.', 'Mock Test']
-        for col_idx, header in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col_idx, value=header)
-            cell.font = Font(bold=True)
-            cell.fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
-            cell.font = Font(color="FFFFFF", bold=True)
-        
-        # Add data
-        for row_idx, alloc in enumerate(allocations, 2):
-            ws.cell(row=row_idx, column=1, value=alloc.get('Sl. No.', ''))
-            ws.cell(row=row_idx, column=2, value=alloc.get('IO Name', ''))
-            ws.cell(row=row_idx, column=3, value=alloc.get('Area', ''))
-            ws.cell(row=row_idx, column=4, value=alloc.get('Designation', ''))
-            ws.cell(row=row_idx, column=5, value=alloc.get('Venue', ''))
-            ws.cell(row=row_idx, column=6, value=alloc.get('Date', ''))
-            ws.cell(row=row_idx, column=7, value=alloc.get('Shift', ''))
-            ws.cell(row=row_idx, column=8, value=alloc.get('Role', ''))
-            ws.cell(row=row_idx, column=9, value=alloc.get('Rate (₹)', ''))
-            ws.cell(row=row_idx, column=10, value=alloc.get('Order No.', ''))
-            ws.cell(row=row_idx, column=11, value='Yes' if alloc.get('Mock Test', False) else 'No')
-        
-        # Auto-size columns
-        for column in ws.columns:
-            max_length = 0
-            column_letter = get_column_letter(column[0].column)
-            for cell in column:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
-                    pass
-            adjusted_width = min(max_length + 2, 50)
-            ws.column_dimensions[column_letter].width = adjusted_width
-        
-        # Save to bytes
-        excel_buffer = BytesIO()
-        wb.save(excel_buffer)
-        excel_buffer.seek(0)
-        
-        # Create download link
-        b64 = base64.b64encode(excel_buffer.read()).decode()
-        href = f'<a href="data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,{b64}" download="IO_Allocations_{exam_key.replace(" ", "_")}.xlsx">📥 Download Excel File</a>'
-        st.markdown(href, unsafe_allow_html=True)
-        
-        st.success("✅ Excel file generated successfully!")
-        
-    except Exception as e:
-        st.error(f"Error generating Excel file: {str(e)}")
-
-def export_io_charts(allocations):
-    """Export IO allocation charts"""
-    st.info("Chart export functionality coming soon")
 
 def show_ey_report(exam_key):
     """Show detailed EY allocations report"""
@@ -2619,6 +3210,12 @@ def show_ey_report(exam_key):
     if not ey_allocations:
         st.info("No EY allocations for this exam")
         return
+    
+    # Export option at the top
+    col_export, _ = st.columns([1, 3])
+    with col_export:
+        if st.button("📄 Export to Excel", type="primary", use_container_width=True, key="export_ey_report"):
+            export_ey_report_to_excel(ey_allocations, exam_key)
     
     # Display report
     st.markdown(f"### 👁️ EY Allocations Report ({len(ey_allocations)} records)")
@@ -2669,6 +3266,12 @@ def show_financial_summary(exam_key):
     if not io_allocations and not ey_allocations:
         st.info("No allocations for this exam")
         return
+    
+    # Export option at the top
+    col_export, _ = st.columns([1, 3])
+    with col_export:
+        if st.button("📄 Export to Excel", type="primary", use_container_width=True, key="export_financial_report"):
+            export_financial_summary_to_excel(exam_key, io_allocations, ey_allocations)
     
     # Calculate costs
     io_costs_by_role = {}
@@ -2866,6 +3469,80 @@ def show_venuewise_report(exam_key):
     st.plotly_chart(fig, use_container_width=True)
 
 # ============================================================================
+# DATA UPLOAD MODULE
+# ============================================================================
+
+def show_data_upload():
+    """Display data upload interface"""
+    
+    st.markdown("""
+        <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #9b59b6 0%, #8e44ad 100%); 
+                 color: white; border-radius: 10px; margin-bottom: 30px;'>
+            <h1>📤 DATA UPLOAD CENTER</h1>
+            <p>Upload Master Data Files for IO, Venue, and EY Personnel</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # Navigation tabs
+    tab_io, tab_venue, tab_ey = st.tabs(["📁 IO Master Data", "🏢 Venue Master Data", "👁️ EY Master Data"])
+    
+    with tab_io:
+        upload_io_master()
+        
+        if st.session_state.io_master_loaded:
+            st.markdown("---")
+            st.markdown("### 📊 Current IO Data Statistics")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Records", len(st.session_state.io_df))
+            with col2:
+                st.metric("Unique Areas", len(st.session_state.io_df['AREA'].unique()))
+            with col3:
+                st.metric("Last Updated", datetime.now().strftime("%d-%m-%Y %H:%M"))
+            
+            with st.expander("📋 View IO Data"):
+                st.dataframe(st.session_state.io_df, use_container_width=True)
+    
+    with tab_venue:
+        upload_venue_master()
+        
+        if st.session_state.venue_master_loaded:
+            st.markdown("---")
+            st.markdown("### 📊 Current Venue Data Statistics")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Records", len(st.session_state.venue_df))
+            with col2:
+                st.metric("Unique Venues", len(st.session_state.venue_df['VENUE'].unique()))
+            with col3:
+                st.metric("Date Range", f"{st.session_state.venue_df['DATE'].min()} to {st.session_state.venue_df['DATE'].max()}")
+            
+            with st.expander("📋 View Venue Data"):
+                st.dataframe(st.session_state.venue_df, use_container_width=True)
+    
+    with tab_ey:
+        upload_ey_master()
+        
+        if st.session_state.ey_master_loaded:
+            st.markdown("---")
+            st.markdown("### 📊 Current EY Data Statistics")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Records", len(st.session_state.ey_df))
+            with col2:
+                st.metric("Unique Universities", len(st.session_state.ey_df['UNIVERSITY'].unique()) if 'UNIVERSITY' in st.session_state.ey_df.columns else 0)
+            with col3:
+                st.metric("Last Updated", datetime.now().strftime("%d-%m-%Y %H:%M"))
+            
+            with st.expander("📋 View EY Data"):
+                st.dataframe(st.session_state.ey_df, use_container_width=True)
+    
+    # Back button
+    if st.button("← Back to Dashboard", use_container_width=True, key="back_from_upload"):
+        st.session_state.menu = "dashboard"
+        st.rerun()
+
+# ============================================================================
 # DELETION SYSTEM - TIER 2: BULK DELETION (Continued from earlier)
 # ============================================================================
 
@@ -3007,7 +3684,7 @@ def show_settings():
         </div>
     """, unsafe_allow_html=True)
     
-    tab1, tab2, tab3 = st.tabs(["💰 Remuneration Rates", "📁 Data Management", "🛠️ System Tools"])
+    tab1, tab2, tab3, tab4 = st.tabs(["💰 Remuneration Rates", "📁 Data Management", "🛠️ System Tools", "📤 Export All Data"])
     
     with tab1:
         show_remuneration_settings()
@@ -3017,6 +3694,9 @@ def show_settings():
     
     with tab3:
         show_system_tools()
+    
+    with tab4:
+        show_export_all_data()
 
 def show_remuneration_settings():
     """Display remuneration rate settings"""
@@ -3112,7 +3792,7 @@ def show_data_management():
     with col_import1:
         st.markdown("**Import Master Data:**")
         
-        io_file = st.file_uploader("IO Master Data (Excel/CSV)", type=['xlsx', 'xls', 'csv'], key="io_upload")
+        io_file = st.file_uploader("IO Master Data (Excel/CSV)", type=['xlsx', 'xls', 'csv'], key="io_upload_settings")
         if io_file:
             try:
                 if io_file.name.endswith('.csv'):
@@ -3129,6 +3809,24 @@ def show_data_management():
                     st.error("❌ Missing required columns")
             except Exception as e:
                 st.error(f"Error loading file: {str(e)}")
+        
+        venue_file = st.file_uploader("Venue Master Data (Excel/CSV)", type=['xlsx', 'xls', 'csv'], key="venue_upload_settings")
+        if venue_file:
+            try:
+                if venue_file.name.endswith('.csv'):
+                    df = pd.read_csv(venue_file)
+                else:
+                    df = pd.read_excel(venue_file)
+                
+                required_cols = ['VENUE', 'DATE', 'SHIFT', 'CENTRE_CODE']
+                if all(col in df.columns for col in required_cols):
+                    st.session_state.venue_df = df
+                    st.session_state.venue_master_loaded = True
+                    st.success(f"✅ Venue data loaded: {len(df)} records")
+                else:
+                    st.error("❌ Missing required columns")
+            except Exception as e:
+                st.error(f"Error loading file: {str(e)}")
     
     with col_import2:
         st.markdown("**Export Data:**")
@@ -3137,32 +3835,42 @@ def show_data_management():
             # Create a comprehensive export
             export_all_data()
 
-def export_all_data():
-    """Export all system data"""
-    try:
-        # Create a comprehensive export structure
-        export_data = {
-            'export_timestamp': datetime.now().isoformat(),
-            'system_version': '1.0',
-            'exam_data': st.session_state.exam_data,
-            'allocation_references': st.session_state.allocation_references,
-            'remuneration_rates': st.session_state.remuneration_rates,
-            'deleted_records': st.session_state.deleted_records,
-            'current_exam_key': st.session_state.current_exam_key
-        }
-        
-        # Convert to JSON
-        json_data = json.dumps(export_data, indent=4, default=str)
-        
-        # Create download link
-        b64 = base64.b64encode(json_data.encode()).decode()
-        href = f'<a href="data:application/json;base64,{b64}" download="SSC_System_Export_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json">📥 Download Complete System Data</a>'
-        st.markdown(href, unsafe_allow_html=True)
-        
-        st.success("✅ Export file generated successfully!")
-        
-    except Exception as e:
-        st.error(f"Error exporting data: {str(e)}")
+def show_export_all_data():
+    """Display export all data options"""
+    
+    st.markdown("### 📤 Export All System Data")
+    st.info("Export complete system data including allocations, references, and settings")
+    
+    col_export1, col_export2, col_export3 = st.columns(3)
+    
+    with col_export1:
+        if st.button("📊 Export to Excel", use_container_width=True, key="export_excel_all"):
+            export_all_data_to_excel()
+    
+    with col_export2:
+        if st.button("📄 Export to JSON", use_container_width=True, key="export_json_all"):
+            export_all_data()
+    
+    with col_export3:
+        if st.button("📋 Generate Summary Report", use_container_width=True, key="summary_report_all"):
+            st.info("Summary report generation coming soon")
+    
+    # System statistics
+    st.markdown("### 📊 System Statistics")
+    
+    col_stat1, col_stat2, col_stat3 = st.columns(3)
+    
+    with col_stat1:
+        st.metric("Total Exams", len(st.session_state.exam_data))
+        st.metric("IO Allocations", len(st.session_state.allocation))
+    
+    with col_stat2:
+        st.metric("EY Allocations", len(st.session_state.ey_allocation))
+        st.metric("Deleted Records", len(st.session_state.deleted_records))
+    
+    with col_stat3:
+        st.metric("Undo Stack", len(st.session_state.undo_stack))
+        st.metric("Redo Stack", len(st.session_state.redo_stack))
 
 def show_system_tools():
     """Display system tools"""
@@ -3186,6 +3894,8 @@ def show_system_tools():
         st.write(f"- Current Exam: {st.session_state.current_exam_key or 'None'}")
         st.write(f"- Undo Stack: {len(st.session_state.undo_stack)}")
         st.write(f"- Redo Stack: {len(st.session_state.redo_stack)}")
+        st.write(f"- IO Data Loaded: {'Yes' if st.session_state.io_master_loaded else 'No'}")
+        st.write(f"- Venue Data Loaded: {'Yes' if st.session_state.venue_master_loaded else 'No'}")
     
     # Maintenance tools
     st.markdown("#### 🔧 Maintenance Tools")
@@ -3220,6 +3930,12 @@ def show_system_tools():
                 st.session_state.ey_allocation = []
                 st.session_state.allocation_references = {}
                 st.session_state.current_exam_key = ""
+                st.session_state.io_df = pd.DataFrame()
+                st.session_state.venue_df = pd.DataFrame()
+                st.session_state.ey_df = pd.DataFrame()
+                st.session_state.io_master_loaded = False
+                st.session_state.venue_master_loaded = False
+                st.session_state.ey_master_loaded = False
                 
                 # Clear files
                 for file in [DATA_FILE, REFERENCE_FILE]:
@@ -3306,6 +4022,37 @@ def main():
                 margin: 5px 0;
                 border-radius: 4px;
             }
+            
+            /* Upload section styling */
+            .upload-section {
+                background-color: #f8f9fa;
+                border: 2px dashed #dee2e6;
+                border-radius: 10px;
+                padding: 30px;
+                text-align: center;
+                margin: 20px 0;
+            }
+            
+            .upload-section:hover {
+                border-color: #4169e1;
+                background-color: #e9ecef;
+            }
+            
+            .export-button {
+                background: linear-gradient(135deg, #00b09b 0%, #96c93d 100%);
+                color: white;
+                border: none;
+                padding: 10px 20px;
+                border-radius: 8px;
+                font-weight: bold;
+                cursor: pointer;
+                transition: all 0.3s;
+            }
+            
+            .export-button:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            }
             </style>
         """, unsafe_allow_html=True)
         
@@ -3324,9 +4071,10 @@ def main():
                 </div>
             """, unsafe_allow_html=True)
             
-            # Menu selection
+            # Menu selection - UPDATED WITH DATA UPLOAD
             menu_options = {
                 "🏠 Dashboard": "dashboard",
+                "📤 Data Upload": "data_upload",
                 "📝 Exam Management": "exam",
                 "👨‍💼 Centre Coordinator": "io",
                 "👁️ EY Personnel": "ey",
@@ -3365,6 +4113,29 @@ def main():
                     st.metric("EY", current_ey)
             else:
                 st.warning("No exam selected")
+            
+            st.markdown("---")
+            
+            # Data status
+            st.markdown("### 📁 Data Status")
+            
+            col_data1, col_data2 = st.columns(2)
+            with col_data1:
+                if st.session_state.io_master_loaded:
+                    st.success("✅ IO")
+                else:
+                    st.error("❌ IO")
+            
+            with col_data2:
+                if st.session_state.venue_master_loaded:
+                    st.success("✅ Venue")
+                else:
+                    st.error("❌ Venue")
+            
+            if st.session_state.ey_master_loaded:
+                st.success("✅ EY")
+            else:
+                st.error("❌ EY")
             
             st.markdown("---")
             
@@ -3416,6 +4187,8 @@ def main():
             # Display selected module
             if st.session_state.menu == "dashboard":
                 show_dashboard()
+            elif st.session_state.menu == "data_upload":
+                show_data_upload()
             elif st.session_state.menu == "exam":
                 show_exam_management()
             elif st.session_state.menu == "io":
