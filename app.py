@@ -4,7 +4,7 @@ Centre Coordinator & Flying Squad Allocation System
 Streamlit Web Application
 Designed by Bijay Paswan
 
-ENHANCED VERSION WITH COMPREHENSIVE DELETION & RECORD MANAGEMENT SYSTEM
+ENHANCED VERSION WITH COMPREHENSIVE DATE SELECTION SYSTEM
 """
 
 import streamlit as st
@@ -20,7 +20,7 @@ import hashlib
 import base64
 from io import BytesIO, StringIO
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Any, Set
+from typing import Dict, List, Tuple, Optional, Any
 import traceback
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
@@ -37,15 +37,12 @@ DATA_DIR = Path("data")
 DATA_DIR.mkdir(exist_ok=True)
 BACKUP_DIR = DATA_DIR / "backups"
 BACKUP_DIR.mkdir(exist_ok=True)
-AUDIT_DIR = DATA_DIR / "audit_logs"
-AUDIT_DIR.mkdir(exist_ok=True)
 
 # File paths
 CONFIG_FILE = DATA_DIR / "config.json"
 DATA_FILE = DATA_DIR / "allocations_data.json"
 REFERENCE_FILE = DATA_DIR / "allocation_references.json"
 DELETED_RECORDS_FILE = DATA_DIR / "deleted_records.json"
-AUDIT_LOG_FILE = AUDIT_DIR / f"audit_{datetime.now().strftime('%Y%m')}.json"
 LOGFILE = DATA_DIR / "app.log"
 
 # Configure logging
@@ -77,8 +74,6 @@ def initialize_session_state():
         'allocation': [],
         'ey_allocation': [],
         'deleted_records': [],
-        'undo_stack': [],
-        'redo_stack': [],
         
         # Configuration
         'remuneration_rates': DEFAULT_RATES.copy(),
@@ -130,62 +125,13 @@ def initialize_session_state():
         'creating_new_ref_EY Personnel': False,
         
         # Current menu
-        'menu': 'dashboard',
-        
-        # Deletion system state
-        'deletion_mode': None,
-        'selected_deletions': [],
-        'bulk_deletion_role_groups': {},
-        'show_deletion_dialog': False,
-        'deletion_order_no': "",
-        'deletion_reason': "",
-        'show_deleted_records': False,
-        'deleted_records_filter': "all",
-        'show_bulk_delete': False,
-        'bulk_delete_selection': [],
-        'last_action': None,
-        'show_update_reference': False,
-        'update_reference_data': None
+        'menu': 'dashboard'
     }
     
     # Initialize all values
     for key, default_value in default_values.items():
         if key not in st.session_state:
             st.session_state[key] = default_value
-
-# ============================================================================
-# AUDIT LOGGING SYSTEM
-# ============================================================================
-
-def log_audit_event(event_type: str, event_data: Dict, user_action: str = ""):
-    """Log audit events for compliance"""
-    try:
-        audit_entry = {
-            'timestamp': datetime.now().isoformat(),
-            'event_type': event_type,
-            'event_data': event_data,
-            'user_action': user_action,
-            'exam': st.session_state.current_exam_key,
-            'user': "system_admin"  # In production, replace with actual user
-        }
-        
-        # Load existing audit log
-        audit_log = []
-        if AUDIT_LOG_FILE.exists():
-            with open(AUDIT_LOG_FILE, 'r') as f:
-                audit_log = json.load(f)
-        
-        # Append new entry
-        audit_log.append(audit_entry)
-        
-        # Save audit log
-        with open(AUDIT_LOG_FILE, 'w') as f:
-            json.dump(audit_log, f, indent=2, default=str)
-        
-        return True
-    except Exception as e:
-        logging.error(f"Audit logging error: {str(e)}")
-        return False
 
 # ============================================================================
 # DATA PERSISTENCE FUNCTIONS
@@ -245,7 +191,7 @@ def save_all_data():
             if st.session_state.current_exam_key not in st.session_state.exam_data:
                 st.session_state.exam_data[st.session_state.current_exam_key] = {
                     'io_allocations': [],
-                    'ey_allocation': []
+                    'ey_allocations': []
                 }
             
             # Update allocations for current exam
@@ -303,20 +249,6 @@ def create_backup(description=""):
         with open(backup_file, 'w') as f:
             json.dump(backup_data, f, indent=4, default=str)
         
-        # Log backup creation
-        log_audit_event(
-            event_type="backup_created",
-            event_data={
-                "backup_file": backup_file.name,
-                "description": description,
-                "record_count": {
-                    "exams": len(st.session_state.exam_data),
-                    "deleted_records": len(st.session_state.deleted_records)
-                }
-            },
-            user_action="System backup"
-        )
-        
         return backup_file
     except Exception as e:
         return None
@@ -326,15 +258,6 @@ def restore_from_backup(backup_file):
     try:
         with open(backup_file, 'r') as f:
             backup_data = json.load(f)
-        
-        # Save current state to undo stack
-        current_state = {
-            'exam_data': st.session_state.exam_data.copy(),
-            'allocation_references': st.session_state.allocation_references.copy(),
-            'deleted_records': st.session_state.deleted_records.copy(),
-            'current_exam_key': st.session_state.current_exam_key
-        }
-        st.session_state.undo_stack.append(current_state)
         
         # Restore data
         st.session_state.exam_data = backup_data.get('exam_data', {})
@@ -355,17 +278,6 @@ def restore_from_backup(backup_file):
         
         # Save restored data
         save_all_data()
-        
-        # Log restoration
-        log_audit_event(
-            event_type="backup_restored",
-            event_data={
-                "backup_file": backup_file.name,
-                "description": backup_data.get('description', ''),
-                "timestamp": backup_data.get('timestamp', '')
-            },
-            user_action="Restored from backup"
-        )
         
         return True
     except Exception as e:
@@ -475,1448 +387,6 @@ def load_default_master_data():
     st.session_state.ey_master_loaded = True
     
     st.success("Default master data loaded successfully!")
-
-# ============================================================================
-# DELETION SYSTEM - TIER 1: SINGLE ENTRY DELETION
-# ============================================================================
-
-def show_deletion_dialog(record, record_type="IO"):
-    """Show deletion dialog for single entry"""
-    
-    st.markdown("### 🗑️ Delete Entry")
-    
-    # Display record info
-    if record_type == "IO":
-        st.write(f"**IO Name:** {record.get('IO Name', 'N/A')}")
-        st.write(f"**Venue:** {record.get('Venue', 'N/A')}")
-        st.write(f"**Date:** {record.get('Date', 'N/A')}")
-        st.write(f"**Shift:** {record.get('Shift', 'N/A')}")
-        st.write(f"**Role:** {record.get('Role', 'N/A')}")
-    else:
-        st.write(f"**EY Personnel:** {record.get('EY Personnel', 'N/A')}")
-        st.write(f"**Venue:** {record.get('Venue', 'N/A')}")
-        st.write(f"**Date:** {record.get('Date', 'N/A')}")
-        st.write(f"**Shift:** {record.get('Shift', 'N/A')}")
-    
-    # Deletion reference inputs
-    st.markdown("---")
-    st.markdown("### 📋 Deletion Reference (Mandatory)")
-    
-    deletion_order_no = st.text_input(
-        "Deletion Order No.:",
-        placeholder="e.g., SSC/Deletion/2024/001",
-        key="deletion_order_no"
-    )
-    
-    deletion_reason = st.text_area(
-        "Deletion Reason:",
-        placeholder="Explain why this allocation is being deleted...",
-        height=100,
-        key="deletion_reason"
-    )
-    
-    col_confirm, col_cancel = st.columns(2)
-    
-    with col_confirm:
-        if st.button("✅ Confirm Deletion", type="primary", use_container_width=True):
-            if not deletion_order_no.strip():
-                st.error("❌ Deletion Order No. is required")
-                return False
-            if not deletion_reason.strip():
-                st.error("❌ Deletion Reason is required")
-                return False
-            
-            # Save to undo stack
-            if record_type == "IO":
-                undo_data = {
-                    'action': 'delete_io',
-                    'record': record.copy(),
-                    'record_type': 'IO'
-                }
-            else:
-                undo_data = {
-                    'action': 'delete_ey',
-                    'record': record.copy(),
-                    'record_type': 'EY'
-                }
-            st.session_state.undo_stack.append(undo_data)
-            
-            # Perform deletion
-            success = delete_single_entry(record, record_type, deletion_order_no, deletion_reason)
-            
-            if success:
-                st.session_state.show_deletion_dialog = False
-                st.session_state.deletion_mode = None
-                st.rerun()
-            return success
-    
-    with col_cancel:
-        if st.button("❌ Cancel", type="secondary", use_container_width=True):
-            st.session_state.show_deletion_dialog = False
-            st.session_state.deletion_mode = None
-            st.rerun()
-    
-    return False
-
-def delete_single_entry(record, record_type, deletion_order_no, deletion_reason):
-    """Delete single entry with audit trail"""
-    
-    try:
-        # Create deletion record
-        deletion_record = {
-            'original_data': record,
-            'deletion_order_no': deletion_order_no.strip(),
-            'deletion_reason': deletion_reason.strip(),
-            'deletion_timestamp': datetime.now().isoformat(),
-            'exam': st.session_state.current_exam_key,
-            'record_type': record_type,
-            'deleted_by': 'system_admin'
-        }
-        
-        # Add to deleted records
-        st.session_state.deleted_records.append(deletion_record)
-        
-        # Remove from active allocations
-        if record_type == "IO":
-            # Remove by finding exact match
-            for idx, alloc in enumerate(st.session_state.allocation):
-                if (alloc.get('Sl. No.') == record.get('Sl. No.') and
-                    alloc.get('IO Name') == record.get('IO Name') and
-                    alloc.get('Venue') == record.get('Venue') and
-                    alloc.get('Date') == record.get('Date') and
-                    alloc.get('Shift') == record.get('Shift')):
-                    
-                    del st.session_state.allocation[idx]
-                    
-                    # Renumber serial numbers
-                    for i, alloc in enumerate(st.session_state.allocation):
-                        alloc['Sl. No.'] = i + 1
-                    
-                    break
-        else:
-            # EY allocation deletion
-            for idx, alloc in enumerate(st.session_state.ey_allocation):
-                if (alloc.get('Sl. No.') == record.get('Sl. No.') and
-                    alloc.get('EY Personnel') == record.get('EY Personnel') and
-                    alloc.get('Venue') == record.get('Venue') and
-                    alloc.get('Date') == record.get('Date') and
-                    alloc.get('Shift') == record.get('Shift')):
-                    
-                    del st.session_state.ey_allocation[idx]
-                    
-                    # Renumber serial numbers
-                    for i, alloc in enumerate(st.session_state.ey_allocation):
-                        alloc['Sl. No.'] = i + 1
-                    
-                    break
-        
-        # Update exam data
-        exam_key = st.session_state.current_exam_key
-        if exam_key in st.session_state.exam_data:
-            st.session_state.exam_data[exam_key]['io_allocations'] = st.session_state.allocation
-            st.session_state.exam_data[exam_key]['ey_allocations'] = st.session_state.ey_allocation
-        
-        # Save data
-        save_all_data()
-        
-        # Log audit event
-        log_audit_event(
-            event_type="single_entry_deletion",
-            event_data={
-                "record_type": record_type,
-                "record_id": record.get('Sl. No.', 'Unknown'),
-                "person_name": record.get('IO Name') or record.get('EY Personnel', 'Unknown'),
-                "deletion_order_no": deletion_order_no,
-                "reason": deletion_reason[:100]  # Truncate for logging
-            },
-            user_action="Deleted single entry"
-        )
-        
-        st.success(f"✅ Entry deleted successfully. Deletion Order: {deletion_order_no}")
-        return True
-        
-    except Exception as e:
-        st.error(f"❌ Error deleting entry: {str(e)}")
-        return False
-
-# ============================================================================
-# DELETION SYSTEM - TIER 2: BULK DELETION
-# ============================================================================
-
-def show_bulk_delete_interface():
-    """Show bulk deletion interface"""
-    
-    st.markdown("### 🗑️ Bulk Delete - Multiple Entries")
-    
-    # Search and filter options
-    col_search1, col_search2, col_search3 = st.columns(3)
-    
-    with col_search1:
-        search_name = st.text_input("Search by Name:", placeholder="Name contains...")
-    
-    with col_search2:
-        search_venue = st.text_input("Search by Venue:", placeholder="Venue contains...")
-    
-    with col_search3:
-        search_date = st.date_input("Filter by Date:")
-    
-    # Type filter
-    record_type = st.radio(
-        "Record Type:",
-        ["All", "IO Allocations", "EY Allocations"],
-        horizontal=True
-    )
-    
-    # Get allocations based on filters
-    all_allocations = []
-    
-    if record_type in ["All", "IO Allocations"]:
-        for alloc in st.session_state.allocation:
-            if alloc.get('Exam') == st.session_state.current_exam_key:
-                all_allocations.append({
-                    'record': alloc,
-                    'type': 'IO',
-                    'display': f"👨‍💼 {alloc.get('IO Name', 'N/A')} - {alloc.get('Venue', 'N/A')} - {alloc.get('Date', 'N/A')} ({alloc.get('Shift', 'N/A')})"
-                })
-    
-    if record_type in ["All", "EY Allocations"]:
-        for alloc in st.session_state.ey_allocation:
-            if alloc.get('Exam') == st.session_state.current_exam_key:
-                all_allocations.append({
-                    'record': alloc,
-                    'type': 'EY',
-                    'display': f"👁️ {alloc.get('EY Personnel', 'N/A')} - {alloc.get('Venue', 'N/A')} - {alloc.get('Date', 'N/A')} ({alloc.get('Shift', 'N/A')})"
-                })
-    
-    # Apply filters
-    filtered_allocations = all_allocations
-    
-    if search_name:
-        filtered_allocations = [
-            a for a in filtered_allocations 
-            if search_name.lower() in str(a['record'].get('IO Name') or a['record'].get('EY Personnel', '')).lower()
-        ]
-    
-    if search_venue:
-        filtered_allocations = [
-            a for a in filtered_allocations 
-            if search_venue.lower() in str(a['record'].get('Venue', '')).lower()
-        ]
-    
-    if search_date:
-        date_str = search_date.strftime("%d-%m-%Y")
-        filtered_allocations = [
-            a for a in filtered_allocations 
-            if str(a['record'].get('Date', '')) == date_str
-        ]
-    
-    if not filtered_allocations:
-        st.info("No allocations match your search criteria")
-        return
-    
-    # Multi-select for bulk deletion
-    st.markdown(f"**Found {len(filtered_allocations)} allocation(s)**")
-    
-    # Create checkboxes for selection
-    selected_indices = []
-    for idx, alloc in enumerate(filtered_allocations):
-        if st.checkbox(alloc['display'], key=f"bulk_select_{idx}"):
-            selected_indices.append(idx)
-    
-    if selected_indices:
-        st.success(f"✅ Selected {len(selected_indices)} allocation(s) for deletion")
-        
-        # Group by role/type for separate references
-        st.session_state.bulk_deletion_role_groups = {}
-        for idx in selected_indices:
-            alloc = filtered_allocations[idx]
-            record_type = alloc['type']
-            
-            if record_type == 'IO':
-                role = alloc['record'].get('Role', 'Unknown')
-                group_key = f"IO_{role}"
-            else:
-                group_key = "EY"
-            
-            if group_key not in st.session_state.bulk_deletion_role_groups:
-                st.session_state.bulk_deletion_role_groups[group_key] = []
-            
-            st.session_state.bulk_deletion_role_groups[group_key].append(alloc['record'])
-        
-        # Show role groups
-        st.markdown("#### 📊 Deletion Groups (by Role)")
-        for group_key, records in st.session_state.bulk_deletion_role_groups.items():
-            st.write(f"**{group_key}:** {len(records)} record(s)")
-        
-        # Action buttons
-        col_bulk1, col_bulk2 = st.columns(2)
-        
-        with col_bulk1:
-            if st.button("🗑️ Proceed with Bulk Delete", type="primary", use_container_width=True):
-                st.session_state.show_deletion_dialog = True
-                st.session_state.deletion_mode = "bulk"
-                st.rerun()
-        
-        with col_bulk2:
-            if st.button("❌ Clear Selection", type="secondary", use_container_width=True):
-                st.session_state.bulk_delete_selection = []
-                st.rerun()
-    else:
-        st.info("Select allocations above to proceed with bulk deletion")
-
-def show_bulk_deletion_dialog():
-    """Show dialog for bulk deletion with role-based references"""
-    
-    st.markdown("### 🗑️ Bulk Deletion - Reference Entry")
-    
-    if not st.session_state.bulk_deletion_role_groups:
-        st.error("No deletion groups selected")
-        return
-    
-    # Save to undo stack
-    undo_data = {
-        'action': 'bulk_delete',
-        'groups': st.session_state.bulk_deletion_role_groups.copy(),
-        'record_counts': {k: len(v) for k, v in st.session_state.bulk_deletion_role_groups.items()}
-    }
-    st.session_state.undo_stack.append(undo_data)
-    
-    # Show reference forms for each role group
-    deletion_references = {}
-    
-    for group_key, records in st.session_state.bulk_deletion_role_groups.items():
-        st.markdown(f"---")
-        st.markdown(f"#### 📋 {group_key.replace('_', ' ')} - {len(records)} record(s)")
-        
-        # Show sample records
-        with st.expander(f"View {len(records)} record(s) in this group"):
-            for record in records[:5]:  # Show first 5
-                if 'IO Name' in record:
-                    st.write(f"• {record.get('IO Name')} - {record.get('Venue')} - {record.get('Date')}")
-                else:
-                    st.write(f"• {record.get('EY Personnel')} - {record.get('Venue')} - {record.get('Date')}")
-            
-            if len(records) > 5:
-                st.write(f"... and {len(records) - 5} more")
-        
-        # Reference inputs for this group
-        col_ref1, col_ref2 = st.columns(2)
-        
-        with col_ref1:
-            order_no = st.text_input(
-                f"Deletion Order No. for {group_key}:",
-                placeholder="e.g., SSC/Deletion/2024/001",
-                key=f"bulk_order_{group_key}"
-            )
-        
-        with col_ref2:
-            reason = st.text_area(
-                f"Deletion Reason for {group_key}:",
-                placeholder=f"Why deleting {len(records)} {group_key.replace('_', ' ')} record(s)...",
-                height=80,
-                key=f"bulk_reason_{group_key}"
-            )
-        
-        deletion_references[group_key] = {
-            'order_no': order_no,
-            'reason': reason,
-            'count': len(records)
-        }
-    
-    # Action buttons
-    col_action1, col_action2 = st.columns(2)
-    
-    with col_action1:
-        if st.button("✅ Confirm Bulk Deletion", type="primary", use_container_width=True):
-            # Validate all references
-            validation_errors = []
-            for group_key, ref in deletion_references.items():
-                if not ref['order_no'].strip():
-                    validation_errors.append(f"❌ Order No. required for {group_key}")
-                if not ref['reason'].strip():
-                    validation_errors.append(f"❌ Reason required for {group_key}")
-            
-            if validation_errors:
-                for error in validation_errors:
-                    st.error(error)
-                return
-            
-            # Perform bulk deletion
-            success = perform_bulk_deletion(deletion_references)
-            
-            if success:
-                st.session_state.show_deletion_dialog = False
-                st.session_state.deletion_mode = None
-                st.session_state.bulk_deletion_role_groups = {}
-                st.rerun()
-    
-    with col_action2:
-        if st.button("❌ Cancel Bulk Deletion", type="secondary", use_container_width=True):
-            st.session_state.show_deletion_dialog = False
-            st.session_state.deletion_mode = None
-            st.session_state.bulk_deletion_role_groups = {}
-            st.rerun()
-
-def perform_bulk_deletion(deletion_references):
-    """Perform bulk deletion with role-based references"""
-    
-    try:
-        total_deleted = 0
-        
-        for group_key, ref in deletion_references.items():
-            records = st.session_state.bulk_deletion_role_groups[group_key]
-            
-            for record in records:
-                # Create deletion record
-                deletion_record = {
-                    'original_data': record,
-                    'deletion_order_no': ref['order_no'].strip(),
-                    'deletion_reason': ref['reason'].strip(),
-                    'deletion_timestamp': datetime.now().isoformat(),
-                    'exam': st.session_state.current_exam_key,
-                    'record_type': 'IO' if 'IO' in group_key else 'EY',
-                    'deleted_by': 'system_admin',
-                    'bulk_group': group_key
-                }
-                
-                # Add to deleted records
-                st.session_state.deleted_records.append(deletion_record)
-                
-                # Remove from active allocations
-                if 'IO' in group_key:
-                    # Remove IO allocation
-                    for idx, alloc in enumerate(st.session_state.allocation):
-                        if (alloc.get('Sl. No.') == record.get('Sl. No.') and
-                            alloc.get('IO Name') == record.get('IO Name') and
-                            alloc.get('Venue') == record.get('Venue') and
-                            alloc.get('Date') == record.get('Date') and
-                            alloc.get('Shift') == record.get('Shift')):
-                            
-                            del st.session_state.allocation[idx]
-                            break
-                else:
-                    # Remove EY allocation
-                    for idx, alloc in enumerate(st.session_state.ey_allocation):
-                        if (alloc.get('Sl. No.') == record.get('Sl. No.') and
-                            alloc.get('EY Personnel') == record.get('EY Personnel') and
-                            alloc.get('Venue') == record.get('Venue') and
-                            alloc.get('Date') == record.get('Date') and
-                            alloc.get('Shift') == record.get('Shift')):
-                            
-                            del st.session_state.ey_allocation[idx]
-                            break
-                
-                total_deleted += 1
-        
-        # Renumber serial numbers
-        for i, alloc in enumerate(st.session_state.allocation):
-            alloc['Sl. No.'] = i + 1
-        
-        for i, alloc in enumerate(st.session_state.ey_allocation):
-            alloc['Sl. No.'] = i + 1
-        
-        # Update exam data
-        exam_key = st.session_state.current_exam_key
-        if exam_key in st.session_state.exam_data:
-            st.session_state.exam_data[exam_key]['io_allocations'] = st.session_state.allocation
-            st.session_state.exam_data[exam_key]['ey_allocations'] = st.session_state.ey_allocation
-        
-        # Save data
-        save_all_data()
-        
-        # Log audit event
-        log_audit_event(
-            event_type="bulk_deletion",
-            event_data={
-                "total_records": total_deleted,
-                "role_groups": {k: len(v) for k, v in st.session_state.bulk_deletion_role_groups.items()},
-                "references": {k: v['order_no'] for k, v in deletion_references.items()}
-            },
-            user_action="Bulk deletion completed"
-        )
-        
-        st.success(f"✅ Bulk deletion completed! {total_deleted} record(s) deleted.")
-        return True
-        
-    except Exception as e:
-        st.error(f"❌ Error in bulk deletion: {str(e)}")
-        return False
-
-# ============================================================================
-# DELETION SYSTEM - TIER 3: EXAM-WISE DELETION
-# ============================================================================
-
-def show_exam_deletion_dialog():
-    """Show exam deletion confirmation dialog"""
-    
-    if not st.session_state.current_exam_key:
-        st.error("No exam selected")
-        return
-    
-    exam_key = st.session_state.current_exam_key
-    
-    st.markdown("### ⚠️ Exam-Wise Deletion")
-    
-    # Show exam info
-    st.warning(f"You are about to delete the entire exam: **{exam_key}**")
-    
-    # Count records
-    io_count = len([a for a in st.session_state.allocation 
-                   if a.get('Exam') == exam_key])
-    ey_count = len([a for a in st.session_state.ey_allocation 
-                   if a.get('Exam') == exam_key])
-    
-    st.write(f"**This will delete:**")
-    st.write(f"- 📊 {io_count} IO allocation(s)")
-    st.write(f"- 👁️ {ey_count} EY allocation(s)")
-    
-    # Create backup before deletion
-    backup_file = create_backup(f"PRE_DELETION_{exam_key.replace(' ', '_')}")
-    
-    if backup_file:
-        st.success(f"✅ Backup created: `{backup_file.name}`")
-        st.info("You can restore from this backup if needed.")
-    else:
-        st.error("❌ Failed to create backup. Deletion cannot proceed.")
-        return
-    
-    # Deletion reference
-    st.markdown("---")
-    st.markdown("### 📋 Deletion Reference")
-    
-    deletion_order_no = st.text_input(
-        "Deletion Order No.:",
-        placeholder="e.g., SSC/Exam-Deletion/2024/001",
-        key="exam_deletion_order"
-    )
-    
-    deletion_reason = st.text_area(
-        "Deletion Reason:",
-        placeholder="Explain why this entire exam is being deleted...",
-        height=100,
-        key="exam_deletion_reason"
-    )
-    
-    # Confirmation
-    st.markdown("---")
-    st.markdown("### ❗ Final Confirmation")
-    
-    confirm = st.checkbox(
-        f"I understand this will permanently delete {io_count + ey_count} records from '{exam_key}'",
-        value=False
-    )
-    
-    col_confirm, col_cancel = st.columns(2)
-    
-    with col_confirm:
-        if st.button("🗑️ DELETE ENTIRE EXAM", type="primary", use_container_width=True):
-            if not confirm:
-                st.error("Please confirm your understanding")
-                return
-            
-            if not deletion_order_no.strip():
-                st.error("❌ Deletion Order No. is required")
-                return
-            if not deletion_reason.strip():
-                st.error("❌ Deletion Reason is required")
-                return
-            
-            # Perform exam deletion
-            success = delete_entire_exam(exam_key, deletion_order_no, deletion_reason, backup_file)
-            
-            if success:
-                st.session_state.current_exam_key = ""
-                st.session_state.allocation = []
-                st.session_state.ey_allocation = []
-                st.rerun()
-    
-    with col_cancel:
-        if st.button("❌ Cancel", type="secondary", use_container_width=True):
-            st.rerun()
-
-def delete_entire_exam(exam_key, deletion_order_no, deletion_reason, backup_file):
-    """Delete entire exam with audit trail"""
-    
-    try:
-        # Save current exam data for undo
-        exam_data = st.session_state.exam_data.get(exam_key, {})
-        undo_data = {
-            'action': 'delete_exam',
-            'exam_key': exam_key,
-            'exam_data': exam_data.copy(),
-            'backup_file': backup_file.name if backup_file else None
-        }
-        st.session_state.undo_stack.append(undo_data)
-        
-        # Move all allocations to deleted records
-        io_allocations = exam_data.get('io_allocations', [])
-        ey_allocations = exam_data.get('ey_allocations', [])
-        
-        # Process IO allocations
-        for record in io_allocations:
-            deletion_record = {
-                'original_data': record,
-                'deletion_order_no': deletion_order_no.strip(),
-                'deletion_reason': deletion_reason.strip(),
-                'deletion_timestamp': datetime.now().isoformat(),
-                'exam': exam_key,
-                'record_type': 'IO',
-                'deleted_by': 'system_admin',
-                'deletion_type': 'exam_wise'
-            }
-            st.session_state.deleted_records.append(deletion_record)
-        
-        # Process EY allocations
-        for record in ey_allocations:
-            deletion_record = {
-                'original_data': record,
-                'deletion_order_no': deletion_order_no.strip(),
-                'deletion_reason': deletion_reason.strip(),
-                'deletion_timestamp': datetime.now().isoformat(),
-                'exam': exam_key,
-                'record_type': 'EY',
-                'deleted_by': 'system_admin',
-                'deletion_type': 'exam_wise'
-            }
-            st.session_state.deleted_records.append(deletion_record)
-        
-        # Remove exam from active exams
-        if exam_key in st.session_state.exam_data:
-            del st.session_state.exam_data[exam_key]
-        
-        # Remove exam references
-        if exam_key in st.session_state.allocation_references:
-            del st.session_state.allocation_references[exam_key]
-        
-        # Clear current allocations if this was the current exam
-        if st.session_state.current_exam_key == exam_key:
-            st.session_state.current_exam_key = ""
-            st.session_state.allocation = []
-            st.session_state.ey_allocation = []
-        
-        # Save data
-        save_all_data()
-        
-        # Log audit event
-        log_audit_event(
-            event_type="exam_deletion",
-            event_data={
-                "exam_key": exam_key,
-                "records_deleted": len(io_allocations) + len(ey_allocations),
-                "io_records": len(io_allocations),
-                "ey_records": len(ey_allocations),
-                "deletion_order_no": deletion_order_no,
-                "backup_file": backup_file.name if backup_file else "None",
-                "reason": deletion_reason[:100]
-            },
-            user_action="Deleted entire exam"
-        )
-        
-        st.success(f"✅ Exam '{exam_key}' deleted successfully!")
-        st.info(f"Backup saved as: {backup_file.name}")
-        
-        return True
-        
-    except Exception as e:
-        st.error(f"❌ Error deleting exam: {str(e)}")
-        return False
-
-# ============================================================================
-# DELETED RECORDS MANAGEMENT
-# ============================================================================
-
-def show_deleted_records_manager():
-    """Display deleted records management interface"""
-    
-    st.markdown("""
-        <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); 
-                 color: white; border-radius: 10px; margin-bottom: 30px;'>
-            <h1>🗑️ DELETED RECORDS MANAGER</h1>
-            <p>Complete Audit Trail & Recovery Options</p>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    # Filters and search
-    st.markdown("### 🔍 Search & Filter Deleted Records")
-    
-    col_filter1, col_filter2, col_filter3 = st.columns(3)
-    
-    with col_filter1:
-        filter_exam = st.selectbox(
-            "Filter by Exam:",
-            ["All Exams"] + sorted(set([r.get('exam', 'Unknown') for r in st.session_state.deleted_records])),
-            key="deleted_filter_exam"
-        )
-    
-    with col_filter2:
-        filter_type = st.selectbox(
-            "Filter by Type:",
-            ["All Types", "IO", "EY"],
-            key="deleted_filter_type"
-        )
-    
-    with col_filter3:
-        search_term = st.text_input(
-            "Search:",
-            placeholder="Search by name, venue, or order no...",
-            key="deleted_search"
-        )
-    
-    # Date range filter
-    col_date1, col_date2 = st.columns(2)
-    with col_date1:
-        from_date = st.date_input("From Date:", value=None)
-    with col_date2:
-        to_date = st.date_input("To Date:", value=None)
-    
-    # Apply filters
-    filtered_records = st.session_state.deleted_records
-    
-    if filter_exam != "All Exams":
-        filtered_records = [r for r in filtered_records if r.get('exam') == filter_exam]
-    
-    if filter_type != "All Types":
-        filtered_records = [r for r in filtered_records if r.get('record_type') == filter_type]
-    
-    if search_term:
-        search_term = search_term.lower()
-        filtered_records = [
-            r for r in filtered_records 
-            if (search_term in str(r.get('original_data', {}).get('IO Name', '')).lower() or
-                search_term in str(r.get('original_data', {}).get('EY Personnel', '')).lower() or
-                search_term in str(r.get('original_data', {}).get('Venue', '')).lower() or
-                search_term in str(r.get('deletion_order_no', '')).lower())
-        ]
-    
-    if from_date:
-        from_datetime = datetime.combine(from_date, datetime.min.time())
-        filtered_records = [
-            r for r in filtered_records 
-            if datetime.fromisoformat(r.get('deletion_timestamp', '2000-01-01')).date() >= from_date
-        ]
-    
-    if to_date:
-        to_datetime = datetime.combine(to_date, datetime.max.time())
-        filtered_records = [
-            r for r in filtered_records 
-            if datetime.fromisoformat(r.get('deletion_timestamp', '2100-01-01')).date() <= to_date
-        ]
-    
-    # Summary statistics
-    st.markdown(f"### 📊 Found {len(filtered_records)} deleted record(s)")
-    
-    if filtered_records:
-        # Group by exam for statistics
-        exam_groups = {}
-        for record in filtered_records:
-            exam = record.get('exam', 'Unknown')
-            if exam not in exam_groups:
-                exam_groups[exam] = {'IO': 0, 'EY': 0}
-            exam_groups[exam][record.get('record_type', 'Unknown')] += 1
-        
-        # Display statistics
-        col_stat1, col_stat2, col_stat3 = st.columns(3)
-        
-        with col_stat1:
-            total_io = sum(g['IO'] for g in exam_groups.values())
-            st.metric("Total IO Records", total_io)
-        
-        with col_stat2:
-            total_ey = sum(g['EY'] for g in exam_groups.values())
-            st.metric("Total EY Records", total_ey)
-        
-        with col_stat3:
-            total_exams = len(exam_groups)
-            st.metric("Total Exams", total_exams)
-        
-        # Selection for permanent deletion
-        st.markdown("### 🗑️ Permanent Deletion Options")
-        
-        # Option 1: Delete selected records
-        st.markdown("#### Option 1: Delete Selected Records")
-        
-        # Display records with checkboxes
-        selected_for_permanent_deletion = []
-        
-        with st.expander(f"View {len(filtered_records)} Deleted Record(s)", expanded=False):
-            for idx, record in enumerate(filtered_records[:50]):  # Limit to 50 for performance
-                col_check, col_info = st.columns([1, 10])
-                
-                with col_check:
-                    if st.checkbox("", key=f"perm_del_{idx}"):
-                        selected_for_permanent_deletion.append(record)
-                
-                with col_info:
-                    exam = record.get('exam', 'Unknown')
-                    record_type = record.get('record_type', 'Unknown')
-                    
-                    if record_type == 'IO':
-                        person = record.get('original_data', {}).get('IO Name', 'Unknown')
-                        icon = "👨‍💼"
-                    else:
-                        person = record.get('original_data', {}).get('EY Personnel', 'Unknown')
-                        icon = "👁️"
-                    
-                    venue = record.get('original_data', {}).get('Venue', 'Unknown')
-                    date = record.get('original_data', {}).get('Date', 'Unknown')
-                    del_date = datetime.fromisoformat(record.get('deletion_timestamp', '')).strftime("%d-%m-%Y %H:%M")
-                    
-                    st.write(f"{icon} **{person}** | 🏢 {venue} | 📅 {date}")
-                    st.caption(f"🗑️ Deleted on {del_date} | 📋 Order: {record.get('deletion_order_no', 'N/A')}")
-        
-        if selected_for_permanent_deletion:
-            st.warning(f"⚠️ Selected {len(selected_for_permanent_deletion)} record(s) for permanent deletion")
-            
-            col_del1, col_del2 = st.columns(2)
-            with col_del1:
-                if st.button("🔥 Delete Selected Permanently", type="primary", use_container_width=True):
-                    if permanent_delete_records(selected_for_permanent_deletion):
-                        st.success(f"✅ {len(selected_for_permanent_deletion)} record(s) permanently deleted")
-                        st.rerun()
-            
-            with col_del2:
-                if st.button("❌ Clear Selection", type="secondary", use_container_width=True):
-                    st.rerun()
-        
-        # Option 2: Delete by exam
-        st.markdown("#### Option 2: Delete Entire Exam Records")
-        
-        if exam_groups:
-            selected_exam = st.selectbox(
-                "Select Exam to Delete All Records:",
-                ["-- Select Exam --"] + list(exam_groups.keys()),
-                key="perm_del_exam"
-            )
-            
-            if selected_exam != "-- Select Exam --":
-                exam_count = exam_groups[selected_exam]['IO'] + exam_groups[selected_exam]['EY']
-                st.warning(f"⚠️ This will permanently delete ALL {exam_count} record(s) from '{selected_exam}'")
-                
-                confirm = st.checkbox(f"I understand this action cannot be undone for '{selected_exam}'")
-                
-                if st.button("🔥 Delete All Exam Records", type="primary", disabled=not confirm):
-                    exam_records = [r for r in filtered_records if r.get('exam') == selected_exam]
-                    if permanent_delete_records(exam_records):
-                        st.success(f"✅ All {len(exam_records)} record(s) from '{selected_exam}' permanently deleted")
-                        st.rerun()
-        
-        # Option 3: Delete all records (nuclear option)
-        st.markdown("#### Option 3: Delete All Records (Nuclear Option)")
-        
-        with st.expander("⚠️ DANGER ZONE - PERMANENT DELETE ALL"):
-            st.error("This will permanently delete ALL deleted records from ALL exams. This action CANNOT be undone!")
-            
-            confirm1 = st.checkbox("I understand this will delete all audit trails")
-            confirm2 = st.checkbox("I have exported/backed up important records")
-            
-            if confirm1 and confirm2:
-                if st.button("☢️ DELETE ALL RECORDS PERMANENTLY", type="primary"):
-                    if permanent_delete_all_records():
-                        st.success("✅ All deleted records permanently removed")
-                        st.rerun()
-    
-    else:
-        st.info("No deleted records found matching your filters")
-
-def permanent_delete_records(records_to_delete):
-    """Permanently delete records from deleted records database"""
-    
-    try:
-        # Log before deletion
-        log_audit_event(
-            event_type="permanent_deletion",
-            event_data={
-                "records_count": len(records_to_delete),
-                "record_ids": [r.get('original_data', {}).get('Sl. No.', 'Unknown') for r in records_to_delete],
-                "exams": list(set(r.get('exam', 'Unknown') for r in records_to_delete))
-            },
-            user_action="Permanently deleted records from audit trail"
-        )
-        
-        # Remove from deleted records
-        records_to_keep = []
-        deleted_count = 0
-        
-        for record in st.session_state.deleted_records:
-            if record not in records_to_delete:
-                records_to_keep.append(record)
-            else:
-                deleted_count += 1
-        
-        st.session_state.deleted_records = records_to_keep
-        
-        # Save data
-        save_all_data()
-        
-        return True
-        
-    except Exception as e:
-        st.error(f"❌ Error in permanent deletion: {str(e)}")
-        return False
-
-def permanent_delete_all_records():
-    """Permanently delete all records from deleted records database"""
-    
-    try:
-        total_records = len(st.session_state.deleted_records)
-        
-        # Log before deletion
-        log_audit_event(
-            event_type="permanent_deletion_all",
-            event_data={
-                "total_records": total_records,
-                "action": "COMPLETE_DELETION"
-            },
-            user_action="Permanently deleted ALL audit records"
-        )
-        
-        # Clear all records
-        st.session_state.deleted_records = []
-        
-        # Save data
-        save_all_data()
-        
-        return True
-        
-    except Exception as e:
-        st.error(f"❌ Error deleting all records: {str(e)}")
-        return False
-
-# ============================================================================
-# REFERENCE MANAGEMENT SYSTEM
-# ============================================================================
-
-def show_reference_management():
-    """Display reference management interface"""
-    
-    st.markdown("""
-        <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #20b2aa 0%, #3cb371 100%); 
-                 color: white; border-radius: 10px; margin-bottom: 30px;'>
-            <h1>📋 REFERENCE MANAGEMENT</h1>
-            <p>Order No. & Page No. System</p>
-        </div>
-    """, unsafe_allow_html=True)
-    
-    tab1, tab2, tab3 = st.tabs(["📚 View All References", "🔄 Update References", "🗑️ Delete References"])
-    
-    with tab1:
-        show_all_references()
-    
-    with tab2:
-        show_update_reference_interface()
-    
-    with tab3:
-        show_reference_deletion()
-
-def show_all_references():
-    """Display all references used across exams"""
-    
-    if not st.session_state.allocation_references:
-        st.info("No references found")
-        return
-    
-    # Search and filter
-    col_search1, col_search2 = st.columns(2)
-    
-    with col_search1:
-        search_exam = st.text_input("Search Exam:", placeholder="Exam name contains...")
-    
-    with col_search2:
-        search_role = st.selectbox(
-            "Filter by Role:",
-            ["All Roles", "Centre Coordinator", "Flying Squad", "EY Personnel"]
-        )
-    
-    # Display references
-    total_refs = 0
-    for exam_key, exam_refs in st.session_state.allocation_references.items():
-        if search_exam and search_exam.lower() not in exam_key.lower():
-            continue
-        
-        exam_total = 0
-        ref_rows = []
-        
-        for role, ref_data in exam_refs.items():
-            if search_role != "All Roles" and role != search_role:
-                continue
-            
-            exam_total += 1
-            total_refs += 1
-            
-            ref_rows.append({
-                "Exam": exam_key,
-                "Role": role,
-                "Order No.": ref_data.get('order_no', 'N/A'),
-                "Page No.": ref_data.get('page_no', 'N/A'),
-                "Created": datetime.fromisoformat(ref_data.get('timestamp', '2000-01-01')).strftime("%d-%m-%Y %H:%M"),
-                "Remarks": ref_data.get('remarks', '')[:50] + "..." if len(ref_data.get('remarks', '')) > 50 else ref_data.get('remarks', '')
-            })
-        
-        if ref_rows:
-            st.markdown(f"### 📘 {exam_key}")
-            ref_df = pd.DataFrame(ref_rows)
-            st.dataframe(ref_df, use_container_width=True, hide_index=True)
-    
-    if total_refs == 0:
-        st.info("No references match your search criteria")
-
-def show_update_reference_interface():
-    """Interface for updating references"""
-    
-    if not st.session_state.current_exam_key:
-        st.warning("Please select an exam first")
-        return
-    
-    exam_key = st.session_state.current_exam_key
-    
-    st.markdown(f"### 🔄 Update References for {exam_key}")
-    
-    # Get current allocations for this exam
-    current_io = [a for a in st.session_state.allocation if a.get('Exam') == exam_key]
-    current_ey = [a for a in st.session_state.ey_allocation if a.get('Exam') == exam_key]
-    
-    if not current_io and not current_ey:
-        st.info("No allocations found for this exam")
-        return
-    
-    # Group by role
-    role_groups = {}
-    
-    for alloc in current_io:
-        role = alloc.get('Role', 'Unknown')
-        if role not in role_groups:
-            role_groups[role] = []
-        role_groups[role].append(alloc)
-    
-    for alloc in current_ey:
-        role = "EY Personnel"
-        if role not in role_groups:
-            role_groups[role] = []
-        role_groups[role].append(alloc)
-    
-    # Show current references
-    st.markdown("#### 📋 Current References")
-    
-    for role, allocations in role_groups.items():
-        current_ref = st.session_state.allocation_references.get(exam_key, {}).get(role, {})
-        
-        col_role1, col_role2 = st.columns([3, 1])
-        
-        with col_role1:
-            st.write(f"**{role}** - {len(allocations)} allocation(s)")
-            if current_ref:
-                st.write(f"Current: Order No. {current_ref.get('order_no', 'N/A')}, Page {current_ref.get('page_no', 'N/A')}")
-        
-        with col_role2:
-            if st.button(f"Update {role}", key=f"update_ref_{role}", use_container_width=True):
-                st.session_state.show_update_reference = True
-                st.session_state.update_reference_data = {
-                    'exam_key': exam_key,
-                    'role': role,
-                    'allocations': allocations
-                }
-                st.rerun()
-    
-    # Update reference dialog
-    if st.session_state.show_update_reference and st.session_state.update_reference_data:
-        show_update_reference_dialog()
-
-def show_update_reference_dialog():
-    """Dialog for updating references"""
-    
-    data = st.session_state.update_reference_data
-    exam_key = data['exam_key']
-    role = data['role']
-    allocations = data['allocations']
-    
-    st.markdown(f"### 📝 Update Reference for {role}")
-    st.write(f"**Affects {len(allocations)} allocation(s)**")
-    
-    # Current reference
-    current_ref = st.session_state.allocation_references.get(exam_key, {}).get(role, {})
-    
-    if current_ref:
-        st.info(f"Current: Order No. **{current_ref.get('order_no', 'N/A')}**, Page **{current_ref.get('page_no', 'N/A')}**")
-    
-    # New reference inputs
-    col_new1, col_new2 = st.columns(2)
-    
-    with col_new1:
-        new_order_no = st.text_input(
-            "New Order No.:",
-            value=current_ref.get('order_no', ''),
-            placeholder="e.g., SSC/Update/2024/001",
-            key="update_order_no"
-        )
-    
-    with col_new2:
-        new_page_no = st.text_input(
-            "New Page No.:",
-            value=current_ref.get('page_no', ''),
-            placeholder="Page number",
-            key="update_page_no"
-        )
-    
-    new_remarks = st.text_area(
-        "Remarks (Optional):",
-        value=current_ref.get('remarks', ''),
-        placeholder="Any remarks about this update...",
-        height=80,
-        key="update_remarks"
-    )
-    
-    # Update scope
-    update_scope = st.radio(
-        "Update Scope:",
-        ["Only selected allocations", "All allocations of this role"],
-        horizontal=True
-    )
-    
-    # Action buttons
-    col_action1, col_action2 = st.columns(2)
-    
-    with col_action1:
-        if st.button("💾 Update Reference", type="primary", use_container_width=True):
-            if not new_order_no.strip():
-                st.error("❌ Order No. is required")
-                return
-            
-            # Save to undo stack
-            undo_data = {
-                'action': 'update_reference',
-                'exam_key': exam_key,
-                'role': role,
-                'old_reference': current_ref.copy(),
-                'new_reference': {
-                    'order_no': new_order_no,
-                    'page_no': new_page_no,
-                    'remarks': new_remarks,
-                    'timestamp': datetime.now().isoformat()
-                },
-                'scope': update_scope,
-                'affected_count': len(allocations)
-            }
-            st.session_state.undo_stack.append(undo_data)
-            
-            # Update reference in database
-            if exam_key not in st.session_state.allocation_references:
-                st.session_state.allocation_references[exam_key] = {}
-            
-            st.session_state.allocation_references[exam_key][role] = {
-                'order_no': new_order_no.strip(),
-                'page_no': new_page_no.strip(),
-                'remarks': new_remarks.strip(),
-                'timestamp': datetime.now().isoformat(),
-                'updated_from': current_ref.get('order_no', '')
-            }
-            
-            # Update allocations if scope is "all"
-            if update_scope == "All allocations of this role":
-                if role == "EY Personnel":
-                    for alloc in st.session_state.ey_allocation:
-                        if alloc.get('Exam') == exam_key:
-                            alloc['Order No.'] = new_order_no.strip()
-                            alloc['Page No.'] = new_page_no.strip()
-                            alloc['Reference Remarks'] = new_remarks.strip()
-                else:
-                    for alloc in st.session_state.allocation:
-                        if alloc.get('Exam') == exam_key and alloc.get('Role') == role:
-                            alloc['Order No.'] = new_order_no.strip()
-                            alloc['Page No.'] = new_page_no.strip()
-                            alloc['Reference Remarks'] = new_remarks.strip()
-            
-            # Save data
-            save_all_data()
-            
-            # Log audit event
-            log_audit_event(
-                event_type="reference_updated",
-                event_data={
-                    "exam": exam_key,
-                    "role": role,
-                    "old_order_no": current_ref.get('order_no', 'None'),
-                    "new_order_no": new_order_no,
-                    "affected_allocations": len(allocations)
-                },
-                user_action="Updated allocation reference"
-            )
-            
-            st.success(f"✅ Reference updated for {role}")
-            st.session_state.show_update_reference = False
-            st.session_state.update_reference_data = None
-            st.rerun()
-    
-    with col_action2:
-        if st.button("❌ Cancel", type="secondary", use_container_width=True):
-            st.session_state.show_update_reference = False
-            st.session_state.update_reference_data = None
-            st.rerun()
-
-def show_reference_deletion():
-    """Interface for deleting references"""
-    
-    if not st.session_state.allocation_references:
-        st.info("No references to delete")
-        return
-    
-    st.markdown("### 🗑️ Delete References")
-    
-    # List references for deletion
-    ref_list = []
-    
-    for exam_key, exam_refs in st.session_state.allocation_references.items():
-        for role, ref_data in exam_refs.items():
-            ref_list.append({
-                'exam_key': exam_key,
-                'role': role,
-                'order_no': ref_data.get('order_no', 'N/A'),
-                'page_no': ref_data.get('page_no', 'N/A'),
-                'timestamp': datetime.fromisoformat(ref_data.get('timestamp', '')).strftime("%d-%m-%Y"),
-                'key': f"{exam_key}||{role}"
-            })
-    
-    if not ref_list:
-        st.info("No references found")
-        return
-    
-    # Selection for deletion
-    st.write(f"Found {len(ref_list)} reference(s)")
-    
-    selected_refs = []
-    for ref in ref_list:
-        if st.checkbox(
-            f"{ref['exam_key']} - {ref['role']} (Order: {ref['order_no']})",
-            key=f"del_ref_{ref['key']}"
-        ):
-            selected_refs.append(ref)
-    
-    if selected_refs:
-        st.warning(f"⚠️ Selected {len(selected_refs)} reference(s) for deletion")
-        
-        if st.button("🗑️ Delete Selected References", type="primary"):
-            # Save to undo stack
-            undo_data = {
-                'action': 'delete_references',
-                'references': selected_refs.copy()
-            }
-            st.session_state.undo_stack.append(undo_data)
-            
-            # Delete references
-            deleted_count = 0
-            for ref in selected_refs:
-                exam_key = ref['exam_key']
-                role = ref['role']
-                
-                if (exam_key in st.session_state.allocation_references and 
-                    role in st.session_state.allocation_references[exam_key]):
-                    
-                    # Log before deletion
-                    log_audit_event(
-                        event_type="reference_deleted",
-                        event_data={
-                            "exam": exam_key,
-                            "role": role,
-                            "order_no": ref['order_no']
-                        },
-                        user_action="Deleted allocation reference"
-                    )
-                    
-                    del st.session_state.allocation_references[exam_key][role]
-                    deleted_count += 1
-                    
-                    # Remove empty exam entries
-                    if not st.session_state.allocation_references[exam_key]:
-                        del st.session_state.allocation_references[exam_key]
-            
-            # Save data
-            save_all_data()
-            
-            st.success(f"✅ {deleted_count} reference(s) deleted")
-            st.rerun()
-
-# ============================================================================
-# UNDO/REDO SYSTEM
-# ============================================================================
-
-def perform_undo():
-    """Undo last action"""
-    
-    if not st.session_state.undo_stack:
-        st.warning("Nothing to undo")
-        return
-    
-    last_action = st.session_state.undo_stack.pop()
-    action_type = last_action.get('action', '')
-    
-    # Save current state to redo stack
-    current_state = {
-        'exam_data': st.session_state.exam_data.copy(),
-        'allocation_references': st.session_state.allocation_references.copy(),
-        'deleted_records': st.session_state.deleted_records.copy(),
-        'allocation': st.session_state.allocation.copy(),
-        'ey_allocation': st.session_state.ey_allocation.copy(),
-        'current_exam_key': st.session_state.current_exam_key
-    }
-    st.session_state.redo_stack.append(current_state)
-    
-    # Handle different action types
-    if action_type == 'delete_io':
-        # Restore IO allocation
-        record = last_action.get('record', {})
-        st.session_state.allocation.append(record)
-        
-        # Remove from deleted records
-        st.session_state.deleted_records = [
-            r for r in st.session_state.deleted_records 
-            if not (r.get('original_data', {}).get('Sl. No.') == record.get('Sl. No.') and
-                    r.get('original_data', {}).get('IO Name') == record.get('IO Name'))
-        ]
-        
-        st.success(f"✅ Undo: Restored {record.get('IO Name')}")
-    
-    elif action_type == 'delete_ey':
-        # Restore EY allocation
-        record = last_action.get('record', {})
-        st.session_state.ey_allocation.append(record)
-        
-        # Remove from deleted records
-        st.session_state.deleted_records = [
-            r for r in st.session_state.deleted_records 
-            if not (r.get('original_data', {}).get('Sl. No.') == record.get('Sl. No.') and
-                    r.get('original_data', {}).get('EY Personnel') == record.get('EY Personnel'))
-        ]
-        
-        st.success(f"✅ Undo: Restored {record.get('EY Personnel')}")
-    
-    elif action_type == 'bulk_delete':
-        # Restore bulk deletion
-        groups = last_action.get('groups', {})
-        total_restored = 0
-        
-        for group_key, records in groups.items():
-            for record in records:
-                if 'IO' in group_key:
-                    st.session_state.allocation.append(record)
-                else:
-                    st.session_state.ey_allocation.append(record)
-                
-                # Remove from deleted records
-                st.session_state.deleted_records = [
-                    r for r in st.session_state.deleted_records 
-                    if not (r.get('original_data', {}).get('Sl. No.') == record.get('Sl. No.'))
-                ]
-                total_restored += 1
-        
-        st.success(f"✅ Undo: Restored {total_restored} record(s) from bulk deletion")
-    
-    elif action_type == 'delete_exam':
-        # Restore entire exam
-        exam_key = last_action.get('exam_key', '')
-        exam_data = last_action.get('exam_data', {})
-        
-        st.session_state.exam_data[exam_key] = exam_data
-        st.session_state.current_exam_key = exam_key
-        st.session_state.allocation = exam_data.get('io_allocations', [])
-        st.session_state.ey_allocation = exam_data.get('ey_allocations', [])
-        
-        # Remove exam records from deleted records
-        st.session_state.deleted_records = [
-            r for r in st.session_state.deleted_records 
-            if r.get('exam') != exam_key
-        ]
-        
-        st.success(f"✅ Undo: Restored exam '{exam_key}'")
-    
-    elif action_type == 'update_reference':
-        # Restore old reference
-        exam_key = last_action.get('exam_key', '')
-        role = last_action.get('role', '')
-        old_reference = last_action.get('old_reference', {})
-        
-        if exam_key not in st.session_state.allocation_references:
-            st.session_state.allocation_references[exam_key] = {}
-        
-        st.session_state.allocation_references[exam_key][role] = old_reference
-        
-        st.success(f"✅ Undo: Restored reference for {role}")
-    
-    elif action_type == 'delete_references':
-        # Restore deleted references
-        references = last_action.get('references', [])
-        
-        for ref in references:
-            exam_key = ref['exam_key']
-            role = ref['role']
-            
-            if exam_key not in st.session_state.allocation_references:
-                st.session_state.allocation_references[exam_key] = {}
-            
-            st.session_state.allocation_references[exam_key][role] = {
-                'order_no': ref['order_no'],
-                'page_no': ref['page_no'],
-                'timestamp': datetime.now().isoformat(),
-                'restored': True
-            }
-        
-        st.success(f"✅ Undo: Restored {len(references)} reference(s)")
-    
-    # Save data
-    save_all_data()
-    
-    # Log audit event
-    log_audit_event(
-        event_type="undo_action",
-        event_data={
-            "action_type": action_type,
-            "undo_stack_size": len(st.session_state.undo_stack),
-            "redo_stack_size": len(st.session_state.redo_stack)
-        },
-        user_action="Undo last action"
-    )
-
-def perform_redo():
-    """Redo last undone action"""
-    
-    if not st.session_state.redo_stack:
-        st.warning("Nothing to redo")
-        return
-    
-    # Restore from redo stack
-    previous_state = st.session_state.redo_stack.pop()
-    
-    # Save current state to undo stack
-    current_state = {
-        'exam_data': st.session_state.exam_data.copy(),
-        'allocation_references': st.session_state.allocation_references.copy(),
-        'deleted_records': st.session_state.deleted_records.copy(),
-        'allocation': st.session_state.allocation.copy(),
-        'ey_allocation': st.session_state.ey_allocation.copy(),
-        'current_exam_key': st.session_state.current_exam_key
-    }
-    st.session_state.undo_stack.append(current_state)
-    
-    # Restore previous state
-    st.session_state.exam_data = previous_state.get('exam_data', {})
-    st.session_state.allocation_references = previous_state.get('allocation_references', {})
-    st.session_state.deleted_records = previous_state.get('deleted_records', [])
-    st.session_state.allocation = previous_state.get('allocation', [])
-    st.session_state.ey_allocation = previous_state.get('ey_allocation', [])
-    st.session_state.current_exam_key = previous_state.get('current_exam_key', '')
-    
-    # Save data
-    save_all_data()
-    
-    # Log audit event
-    log_audit_event(
-        event_type="redo_action",
-        event_data={
-            "redo_stack_size": len(st.session_state.redo_stack),
-            "undo_stack_size": len(st.session_state.undo_stack)
-        },
-        user_action="Redo last undone action"
-    )
-    
-    st.success("✅ Redo: Restored previous state")
 
 # ============================================================================
 # ENHANCED DATE SELECTION SYSTEM
@@ -2192,200 +662,585 @@ def create_enhanced_date_selection_grid(allocation_type="IO"):
         st.info("Add mock test dates using the form above")
         return []
 
-# ============================================================================
-# ALLOCATION TABLE WITH DELETION OPTIONS
-# ============================================================================
-
-def show_allocation_table_with_controls():
-    """Display allocation table with deletion options"""
+def display_date_card(date_str, venue_data, venue_key, allocation_type="IO"):
+    """Display a date card in the grid"""
     
-    if not st.session_state.current_exam_key:
-        st.info("No exam selected")
+    # Get shifts for this date
+    date_shifts_data = venue_data[venue_data['DATE'] == date_str]
+    date_shifts = date_shifts_data['SHIFT'].unique()
+    date_shifts = [str(shift) for shift in date_shifts if pd.notna(shift) and str(shift) != '']
+    
+    if not date_shifts:
         return
     
-    exam_key = st.session_state.current_exam_key
+    # Initialize date state if not exists
+    date_key = f"{venue_key}_{date_str}"
+    if date_key not in st.session_state.date_grid_state['normal_dates'][venue_key]:
+        st.session_state.date_grid_state['normal_dates'][venue_key][date_key] = {
+            'all_selected': False,
+            'shifts': {shift: False for shift in date_shifts}
+        }
     
-    # Header with controls
-    col_header1, col_header2, col_header3, col_header4 = st.columns([2, 1, 1, 1])
+    # Get current state
+    date_state = st.session_state.date_grid_state['normal_dates'][venue_key][date_key]
     
-    with col_header1:
-        st.markdown(f"### 📋 Current Allocations - {exam_key}")
+    # Calculate selection status
+    selected_shifts = [shift for shift, selected in date_state['shifts'].items() if selected]
+    all_selected = len(selected_shifts) == len(date_shifts)
+    partially_selected = len(selected_shifts) > 0 and not all_selected
+    none_selected = len(selected_shifts) == 0
     
-    with col_header2:
-        if st.button("🗑️ Bulk Delete", use_container_width=True):
-            st.session_state.show_bulk_delete = True
+    # Determine color based on selection
+    if all_selected:
+        bg_color = "#4CAF50"  # Green
+        border_color = "#388E3C"
+        status_text = "✓ All"
+        emoji = "🟢"
+    elif partially_selected:
+        bg_color = "#FF9800"  # Orange
+        border_color = "#F57C00"
+        status_text = f"✓ {len(selected_shifts)}/{len(date_shifts)}"
+        emoji = "🟠"
+    else:
+        bg_color = "#FFEB3B"  # Yellow
+        border_color = "#FBC02D"
+        status_text = f"{len(date_shifts)} shifts"
+        emoji = "🟡"
+    
+    # Create clickable date card
+    card_html = f"""
+        <div style="
+            background-color: {bg_color};
+            color: #333;
+            padding: 12px;
+            border-radius: 8px;
+            border: 2px solid {border_color};
+            margin: 5px 0;
+            cursor: pointer;
+            text-align: center;
+            font-weight: bold;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+        ">
+            <div style='font-size: 16px;'>{emoji} <strong>{date_str}</strong></div>
+            <div style='font-size: 12px; margin-top: 5px;'>{status_text}</div>
+        </div>
+    """
+    
+    # Display card
+    st.markdown(card_html, unsafe_allow_html=True)
+    
+    # Handle click events
+    col_click1, col_click2 = st.columns([1, 1])
+    
+    with col_click1:
+        # Single click - toggle all shifts
+        if st.button("📅 Toggle", key=f"toggle_{date_key}", use_container_width=True):
+            if all_selected:
+                # Deselect all
+                for shift in date_shifts:
+                    date_state['shifts'][shift] = False
+                date_state['all_selected'] = False
+            else:
+                # Select all
+                for shift in date_shifts:
+                    date_state['shifts'][shift] = True
+                date_state['all_selected'] = True
             st.rerun()
     
-    with col_header3:
-        if st.button("↩️ Undo", use_container_width=True, disabled=len(st.session_state.undo_stack) == 0):
-            perform_undo()
-            st.rerun()
-    
-    with col_header4:
-        if st.button("↪️ Redo", use_container_width=True, disabled=len(st.session_state.redo_stack) == 0):
-            perform_redo()
-            st.rerun()
-    
-    # Show IO allocations
-    io_allocations = [a for a in st.session_state.allocation if a.get('Exam') == exam_key]
-    
-    if io_allocations:
-        st.markdown("#### 👨‍💼 IO Allocations")
+    with col_click2:
+        # Double click - expand/collapse
+        is_expanded = st.session_state.date_grid_state['expanded_dates'][venue_key].get(date_str, False)
+        expand_label = "📖 Details" if not is_expanded else "📕 Hide"
         
-        # Create DataFrame for display
-        io_display_data = []
-        for alloc in io_allocations:
-            io_display_data.append({
-                'Sl. No.': alloc.get('Sl. No.', ''),
-                'IO Name': alloc.get('IO Name', ''),
-                'Venue': alloc.get('Venue', ''),
-                'Date': alloc.get('Date', ''),
-                'Shift': alloc.get('Shift', ''),
-                'Role': alloc.get('Role', ''),
-                'Mock': '✓' if alloc.get('Mock Test', False) else '',
-                'Order No.': alloc.get('Order No.', ''),
-                'Actions': alloc.get('Sl. No.', '')  # Placeholder for actions
-            })
+        if st.button(expand_label, key=f"expand_{date_key}", use_container_width=True):
+            st.session_state.date_grid_state['expanded_dates'][venue_key][date_str] = not is_expanded
+            st.rerun()
+    
+    # Show shift selection if expanded
+    if st.session_state.date_grid_state['expanded_dates'][venue_key].get(date_str, False):
+        st.markdown("**Select Shifts:**")
         
-        if io_display_data:
-            io_df = pd.DataFrame(io_display_data)
-            
-            # Display table
-            st.dataframe(
-                io_df[['Sl. No.', 'IO Name', 'Venue', 'Date', 'Shift', 'Role', 'Mock', 'Order No.']],
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # Individual deletion controls
-            st.markdown("##### Individual Deletion")
-            for alloc in io_allocations:
-                col_del1, col_del2, col_del3, col_del4, col_del5, col_del6 = st.columns([3, 2, 2, 1, 1, 1])
-                
-                with col_del1:
-                    st.write(f"**{alloc.get('IO Name', '')}**")
-                
-                with col_del2:
-                    st.write(f"{alloc.get('Venue', '')}")
-                
-                with col_del3:
-                    st.write(f"{alloc.get('Date', '')} ({alloc.get('Shift', '')})")
-                
-                with col_del4:
-                    st.write(f"{alloc.get('Role', '')}")
-                
-                with col_del5:
-                    if st.button("🗑️", key=f"del_io_{alloc.get('Sl. No.', '')}", help="Delete this entry"):
-                        st.session_state.deletion_mode = "single"
-                        st.session_state.selected_deletions = [alloc]
-                        st.session_state.show_deletion_dialog = True
-                        st.rerun()
-                
-                with col_del6:
-                    if st.button("📝", key=f"edit_io_{alloc.get('Sl. No.', '')}", help="Edit this entry"):
-                        st.warning("Edit functionality coming soon")
-    
-    # Show EY allocations
-    ey_allocations = [a for a in st.session_state.ey_allocation if a.get('Exam') == exam_key]
-    
-    if ey_allocations:
+        # Create columns for shifts
+        shift_cols = st.columns(min(3, len(date_shifts)))
+        
+        for idx, shift in enumerate(sorted(date_shifts)):
+            col_idx = idx % len(shift_cols)
+            with shift_cols[col_idx]:
+                shift_selected = st.checkbox(
+                    f"⏰ {shift}",
+                    value=date_state['shifts'][shift],
+                    key=f"shift_{date_key}_{shift}"
+                )
+                if shift_selected != date_state['shifts'][shift]:
+                    date_state['shifts'][shift] = shift_selected
+                    # Update all_selected status
+                    selected_now = [s for s, sel in date_state['shifts'].items() if sel]
+                    date_state['all_selected'] = (len(selected_now) == len(date_shifts))
+                    st.rerun()
+        
         st.markdown("---")
-        st.markdown("#### 👁️ EY Allocations")
-        
-        # Create DataFrame for display
-        ey_display_data = []
-        for alloc in ey_allocations:
-            ey_display_data.append({
-                'Sl. No.': alloc.get('Sl. No.', ''),
-                'EY Personnel': alloc.get('EY Personnel', ''),
-                'Venue': alloc.get('Venue', ''),
-                'Date': alloc.get('Date', ''),
-                'Shift': alloc.get('Shift', ''),
-                'Rate (₹)': alloc.get('Rate (₹)', ''),
-                'Order No.': alloc.get('Order No.', ''),
-                'Actions': alloc.get('Sl. No.', '')
-            })
-        
-        if ey_display_data:
-            ey_df = pd.DataFrame(ey_display_data)
-            
-            # Display table
-            st.dataframe(
-                ey_df[['Sl. No.', 'EY Personnel', 'Venue', 'Date', 'Shift', 'Rate (₹)', 'Order No.']],
-                use_container_width=True,
-                hide_index=True
-            )
-            
-            # Individual deletion controls
-            st.markdown("##### Individual Deletion")
-            for alloc in ey_allocations:
-                col_del1, col_del2, col_del3, col_del4, col_del5 = st.columns([3, 2, 2, 1, 1])
-                
-                with col_del1:
-                    st.write(f"**{alloc.get('EY Personnel', '')}**")
-                
-                with col_del2:
-                    st.write(f"{alloc.get('Venue', '')}")
-                
-                with col_del3:
-                    st.write(f"{alloc.get('Date', '')} ({alloc.get('Shift', '')})")
-                
-                with col_del4:
-                    st.write(f"₹{alloc.get('Rate (₹)', '')}")
-                
-                with col_del5:
-                    if st.button("🗑️", key=f"del_ey_{alloc.get('Sl. No.', '')}", help="Delete this entry"):
-                        st.session_state.deletion_mode = "single"
-                        st.session_state.selected_deletions = [alloc]
-                        st.session_state.show_deletion_dialog = True
-                        st.rerun()
+
+def display_mock_date_card(date_str, venue_key):
+    """Display a mock test date card in the grid"""
     
-    # Delete Last Entry button
-    if io_allocations or ey_allocations:
-        st.markdown("---")
-        col_last1, col_last2 = st.columns([3, 1])
+    date_key = f"{venue_key}_{date_str}"
+    date_state = st.session_state.date_grid_state['mock_dates'][venue_key][date_key]
+    
+    # Get shifts
+    date_shifts = list(date_state['shifts'].keys())
+    selected_shifts = [shift for shift, selected in date_state['shifts'].items() if selected]
+    
+    all_selected = len(selected_shifts) == len(date_shifts)
+    partially_selected = len(selected_shifts) > 0 and not all_selected
+    
+    # Determine color
+    if all_selected:
+        bg_color = "#2196F3"  # Blue for mock tests
+        border_color = "#1976D2"
+        status_text = "✓ All Mock"
+        emoji = "🔵"
+    elif partially_selected:
+        bg_color = "#03A9F4"  # Light blue
+        border_color = "#0288D1"
+        status_text = f"✓ {len(selected_shifts)}/{len(date_shifts)}"
+        emoji = "🔷"
+    else:
+        bg_color = "#B3E5FC"  # Very light blue
+        border_color = "#81D4FA"
+        status_text = f"{len(date_shifts)} mock"
+        emoji = "◻️"
+    
+    # Create card
+    card_html = f"""
+        <div style="
+            background-color: {bg_color};
+            color: #333;
+            padding: 12px;
+            border-radius: 8px;
+            border: 2px solid {border_color};
+            margin: 5px 0;
+            cursor: pointer;
+            text-align: center;
+            font-weight: bold;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        ">
+            <div style='font-size: 16px;'>{emoji} <strong>{date_str}</strong></div>
+            <div style='font-size: 12px; margin-top: 5px;'>{status_text} <small>(Mock)</small></div>
+        </div>
+    """
+    
+    st.markdown(card_html, unsafe_allow_html=True)
+    
+    # Control buttons
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
+        if st.button("📅 Toggle", key=f"mock_toggle_{date_key}", use_container_width=True):
+            if all_selected:
+                # Deselect all
+                for shift in date_shifts:
+                    date_state['shifts'][shift] = False
+            else:
+                # Select all
+                for shift in date_shifts:
+                    date_state['shifts'][shift] = True
+            st.rerun()
+    
+    with col2:
+        if st.button("🗑️ Remove", key=f"mock_remove_{date_key}", type="secondary", use_container_width=True):
+            del st.session_state.date_grid_state['mock_dates'][venue_key][date_key]
+            st.rerun()
+    
+    with col3:
+        # Show shift checkboxes inline
+        shift_list = ", ".join([f"⏰{s}" if date_state['shifts'][s] else s for s in sorted(date_shifts)])
+        st.caption(shift_list)
+
+def get_selected_date_shifts(venue_key, unique_dates, venue_data, allocation_type="IO", selected_venues=None):
+    """Get selected date-shift combinations for normal mode"""
+    
+    selected_date_shifts = []
+    
+    if selected_venues is None:
+        selected_venues = [st.session_state.selected_venue]
+    
+    for date_str in unique_dates:
+        date_key = f"{venue_key}_{date_str}"
         
-        with col_last1:
-            st.info("Quick Actions:")
-        
-        with col_last2:
-            if st.button("🗑️ Delete Last Entry", type="secondary", use_container_width=True):
-                # Find most recent entry
-                recent_io = io_allocations[-1] if io_allocations else None
-                recent_ey = ey_allocations[-1] if ey_allocations else None
-                
-                if recent_io and recent_ey:
-                    # Compare timestamps
-                    io_time = datetime.fromisoformat(recent_io.get('Timestamp', '2000-01-01'))
-                    ey_time = datetime.fromisoformat(recent_ey.get('Timestamp', '2000-01-01'))
-                    
-                    if io_time > ey_time:
-                        recent = recent_io
-                        record_type = "IO"
+        if (venue_key in st.session_state.date_grid_state['normal_dates'] and 
+            date_key in st.session_state.date_grid_state['normal_dates'][venue_key]):
+            
+            date_state = st.session_state.date_grid_state['normal_dates'][venue_key][date_key]
+            
+            for shift, selected in date_state['shifts'].items():
+                if selected:
+                    # For EY mode: assign to ALL selected venues
+                    if allocation_type == "EY":
+                        for venue in selected_venues:
+                            selected_date_shifts.append({
+                                'venue': venue,
+                                'date': date_str,
+                                'shift': shift,
+                                'is_mock': False,
+                                'allocation_type': allocation_type
+                            })
                     else:
-                        recent = recent_ey
-                        record_type = "EY"
-                elif recent_io:
-                    recent = recent_io
-                    record_type = "IO"
-                elif recent_ey:
-                    recent = recent_ey
-                    record_type = "EY"
-                else:
-                    st.warning("No entries to delete")
-                    return
-                
-                st.session_state.deletion_mode = "single"
-                st.session_state.selected_deletions = [recent]
-                st.session_state.show_deletion_dialog = True
-                st.rerun()
+                        # For IO mode: assign to single venue
+                        selected_date_shifts.append({
+                            'venue': st.session_state.selected_venue,
+                            'date': date_str,
+                            'shift': shift,
+                            'is_mock': False,
+                            'allocation_type': allocation_type
+                        })
     
-    # Show empty message if no allocations
-    if not io_allocations and not ey_allocations:
-        st.info("No allocations found for this exam")
+    return selected_date_shifts
+
+def get_selected_mock_date_shifts(venue_key):
+    """Get selected date-shift combinations for mock mode"""
+    
+    selected_date_shifts = []
+    
+    if venue_key in st.session_state.date_grid_state['mock_dates']:
+        for date_key, date_state in st.session_state.date_grid_state['mock_dates'][venue_key].items():
+            date_str = date_key.replace(f"{venue_key}_", "")
+            
+            for shift, selected in date_state['shifts'].items():
+                if selected:
+                    selected_date_shifts.append({
+                        'venue': st.session_state.selected_venue,
+                        'date': date_str,
+                        'shift': shift,
+                        'is_mock': True,
+                        'allocation_type': "IO"
+                    })
+    
+    return selected_date_shifts
 
 # ============================================================================
-# MAIN MODULES WITH INTEGRATED DELETION
+# CONFLICT CHECKING SYSTEM
+# ============================================================================
+
+def check_allocation_conflict_enhanced(person_name, date_info, role, allocation_type):
+    """
+    Enhanced conflict checking with detailed messages
+    """
+    
+    venue = date_info['venue']
+    date = date_info['date']
+    shift = date_info['shift']
+    is_mock = date_info.get('is_mock', False)
+    
+    if allocation_type == "IO":
+        allocations = st.session_state.allocation
+        
+        # 1. Check for exact duplicate
+        duplicate = any(
+            alloc['IO Name'] == person_name and 
+            alloc['Date'] == date and 
+            alloc['Shift'] == shift and 
+            alloc['Venue'] == venue and 
+            alloc['Role'] == role and
+            alloc.get('Mock Test', False) == is_mock
+            for alloc in allocations
+            if alloc.get('Exam') == st.session_state.current_exam_key
+        )
+        
+        if duplicate:
+            return True, f"❌ Duplicate allocation! {person_name} is already allocated to {venue} on {date} ({shift}) as {role}."
+        
+        # 2. For Centre Coordinator: Cannot be at multiple venues same date/shift
+        if role == "Centre Coordinator":
+            conflict = any(
+                alloc['IO Name'] == person_name and 
+                alloc['Date'] == date and 
+                alloc['Shift'] == shift and 
+                alloc['Venue'] != venue and
+                alloc['Role'] == "Centre Coordinator"
+                for alloc in allocations
+                if alloc.get('Exam') == st.session_state.current_exam_key
+            )
+            
+            if conflict:
+                existing_venue = next(
+                    alloc['Venue'] for alloc in allocations 
+                    if alloc['IO Name'] == person_name and 
+                       alloc['Date'] == date and 
+                       alloc['Shift'] == shift and
+                       alloc['Role'] == "Centre Coordinator" and
+                       alloc.get('Exam') == st.session_state.current_exam_key
+                )
+                return True, f"❌ Centre Coordinator conflict! {person_name} is already allocated to {existing_venue} on {date} ({shift})."
+        
+        # 3. For Flying Squad: Allow multiple venues but warn
+        elif role == "Flying Squad":
+            existing_venues = [
+                alloc['Venue'] for alloc in allocations 
+                if alloc['IO Name'] == person_name and 
+                   alloc['Date'] == date and 
+                   alloc['Shift'] == shift and
+                   alloc['Role'] == "Flying Squad" and
+                   alloc.get('Exam') == st.session_state.current_exam_key
+            ]
+            
+            if existing_venues:
+                if venue in existing_venues:
+                    return False, ""  # Same venue, handled by duplicate check
+                
+                # Check if this would exceed reasonable limits
+                if len(existing_venues) >= 3:
+                    return True, f"❌ Too many venues! {person_name} is already assigned to {len(existing_venues)} venues on {date} ({shift}). Maximum 3 venues allowed."
+                
+                return False, f"⚠️ Warning: {person_name} is already allocated to {', '.join(existing_venues)} on {date} ({shift}). Do you want to assign to additional venue {venue}?"
+    
+    elif allocation_type == "EY":
+        allocations = st.session_state.ey_allocation
+        
+        # 1. Check for exact duplicate
+        duplicate = any(
+            alloc['EY Personnel'] == person_name and 
+            alloc['Date'] == date and 
+            alloc['Shift'] == shift and 
+            alloc['Venue'] == venue
+            for alloc in allocations
+            if alloc.get('Exam') == st.session_state.current_exam_key
+        )
+        
+        if duplicate:
+            return True, f"❌ Duplicate EY allocation! {person_name} is already allocated to {venue} on {date} ({shift})."
+        
+        # 2. EY Personnel: Cannot be at multiple venues same date/shift
+        conflict = any(
+            alloc['EY Personnel'] == person_name and 
+            alloc['Date'] == date and 
+            alloc['Shift'] == shift and 
+            alloc['Venue'] != venue
+            for alloc in allocations
+            if alloc.get('Exam') == st.session_state.current_exam_key
+        )
+        
+        if conflict:
+            existing_venue = next(
+                alloc['Venue'] for alloc in allocations 
+                if alloc['EY Personnel'] == person_name and 
+                   alloc['Date'] == date and 
+                   alloc['Shift'] == shift and
+                   alloc.get('Exam') == st.session_state.current_exam_key
+            )
+            return True, f"❌ EY Personnel conflict! {person_name} is already allocated to {existing_venue} on {date} ({shift})."
+        
+        # 3. Check for excessive assignments
+        same_day_assignments = [
+            alloc for alloc in allocations
+            if alloc['EY Personnel'] == person_name and 
+               alloc['Date'] == date and
+               alloc.get('Exam') == st.session_state.current_exam_key
+        ]
+        
+        if len(same_day_assignments) >= 4:
+            return True, f"❌ Excessive workload! {person_name} already has {len(same_day_assignments)} shifts on {date}. Maximum 4 shifts allowed per day."
+    
+    return False, ""
+
+def handle_conflict_warning(warning_message, date_info):
+    """Handle conflict warnings with user confirmation"""
+    
+    # Store warning in session state
+    st.session_state.conflict_warning = {
+        'message': warning_message,
+        'date_info': date_info,
+        'confirmed': False
+    }
+    
+    # Show warning dialog
+    st.warning(warning_message)
+    
+    col_warn1, col_warn2 = st.columns(2)
+    with col_warn1:
+        if st.button("✅ Proceed Anyway", type="primary"):
+            st.session_state.conflict_warning['confirmed'] = True
+            st.rerun()
+    
+    with col_warn2:
+        if st.button("❌ Cancel", type="secondary"):
+            st.session_state.conflict_warning = None
+            st.rerun()
+    
+    return False
+
+# ============================================================================
+# REFERENCE MANAGEMENT
+# ============================================================================
+
+def get_or_create_reference(allocation_type):
+    """Get existing reference or create new one"""
+    exam_key = st.session_state.current_exam_key
+    if not exam_key:
+        st.warning("Please select or create an exam first")
+        return None
+    
+    if exam_key not in st.session_state.allocation_references:
+        st.session_state.allocation_references[exam_key] = {}
+    
+    role_key = allocation_type
+    
+    # Check if reference exists
+    if role_key in st.session_state.allocation_references[exam_key]:
+        existing_ref = st.session_state.allocation_references[exam_key][role_key]
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button(f"📝 Use Existing Reference", key=f"use_existing_{allocation_type}"):
+                return existing_ref
+        
+        with col2:
+            if st.button(f"🆕 Create New Reference", key=f"new_ref_{allocation_type}"):
+                st.session_state[f"creating_new_ref_{allocation_type}"] = True
+                st.rerun()
+        
+        # Display existing reference info
+        st.info(f"**Existing Reference:** Order No. {existing_ref.get('order_no', 'N/A')}, Page No. {existing_ref.get('page_no', 'N/A')}")
+        
+        if f"creating_new_ref_{allocation_type}" in st.session_state and st.session_state[f"creating_new_ref_{allocation_type}"]:
+            return create_reference_form(allocation_type)
+        
+        return None
+    else:
+        return create_reference_form(allocation_type)
+
+def create_reference_form(allocation_type):
+    """Create a form for entering reference details"""
+    st.markdown(f"### 📋 Enter Reference for {allocation_type}")
+    
+    order_no = st.text_input("Order No.:", key=f"order_no_{allocation_type}")
+    page_no = st.text_input("Page No.:", key=f"page_no_{allocation_type}")
+    remarks = st.text_area("Remarks (Optional):", key=f"remarks_{allocation_type}", height=100)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("💾 Save Reference", key=f"save_ref_{allocation_type}"):
+            if order_no and page_no:
+                exam_key = st.session_state.current_exam_key
+                if exam_key not in st.session_state.allocation_references:
+                    st.session_state.allocation_references[exam_key] = {}
+                
+                st.session_state.allocation_references[exam_key][allocation_type] = {
+                    'order_no': order_no,
+                    'page_no': page_no,
+                    'remarks': remarks,
+                    'timestamp': datetime.now().isoformat(),
+                    'allocation_type': allocation_type
+                }
+                
+                save_all_data()
+                st.success("✅ Reference saved successfully!")
+                
+                if f"creating_new_ref_{allocation_type}" in st.session_state:
+                    st.session_state[f"creating_new_ref_{allocation_type}"] = False
+                
+                st.rerun()
+                return st.session_state.allocation_references[exam_key][allocation_type]
+            else:
+                st.error("Please enter both Order No. and Page No.")
+    
+    with col2:
+        if st.button("❌ Cancel", key=f"cancel_ref_{allocation_type}"):
+            if f"creating_new_ref_{allocation_type}" in st.session_state:
+                st.session_state[f"creating_new_ref_{allocation_type}"] = False
+            st.rerun()
+            return None
+    
+    return None
+
+# ============================================================================
+# ALLOCATION FUNCTIONS
+# ============================================================================
+
+def perform_allocation_with_conflict_check(person_name, selected_date_shifts, role, allocation_type, ref_data):
+    """Perform allocation with comprehensive conflict checking"""
+    
+    allocation_count = 0
+    conflicts = []
+    warnings_confirmed = []
+    
+    for date_info in selected_date_shifts:
+        # Check for conflicts
+        is_conflict, message = check_allocation_conflict_enhanced(
+            person_name, date_info, role, allocation_type
+        )
+        
+        if is_conflict:
+            conflicts.append({
+                'date_info': date_info,
+                'message': message,
+                'type': 'error'
+            })
+            continue
+        
+        # Check for warnings (Flying Squad multiple venues)
+        if "Warning:" in message:
+            warning_key = f"{person_name}_{date_info['date']}_{date_info['shift']}"
+            if warning_key not in warnings_confirmed:
+                if 'conflict_warning' in st.session_state and st.session_state.conflict_warning['confirmed']:
+                    warnings_confirmed.append(warning_key)
+                else:
+                    if handle_conflict_warning(message, date_info):
+                        warnings_confirmed.append(warning_key)
+                    continue
+        
+        # Create allocation
+        if allocation_type == "IO":
+            allocation = {
+                'Sl. No.': len(st.session_state.allocation) + allocation_count + 1,
+                'Venue': date_info['venue'],
+                'Date': date_info['date'],
+                'Shift': date_info['shift'],
+                'IO Name': person_name,
+                'Area': st.session_state.current_allocation_area,
+                'Role': role,
+                'Mock Test': date_info['is_mock'],
+                'Exam': st.session_state.current_exam_key,
+                'Order No.': ref_data['order_no'],
+                'Page No.': ref_data['page_no'],
+                'Reference Remarks': ref_data.get('remarks', ''),
+                'Timestamp': datetime.now().isoformat()
+            }
+            
+            st.session_state.allocation.append(allocation)
+        
+        elif allocation_type == "EY":
+            ey_row = st.session_state.current_allocation_ey_row
+            
+            allocation = {
+                'Sl. No.': len(st.session_state.ey_allocation) + allocation_count + 1,
+                'Venue': date_info['venue'],
+                'Date': date_info['date'],
+                'Shift': date_info['shift'],
+                'EY Personnel': person_name,
+                'Mobile': ey_row.get('MOBILE', ''),
+                'Email': ey_row.get('EMAIL', ''),
+                'ID Number': ey_row.get('ID_NUMBER', ''),
+                'Designation': ey_row.get('DESIGNATION', ''),
+                'Department': ey_row.get('DEPARTMENT', ''),
+                'Mock Test': False,
+                'Exam': st.session_state.current_exam_key,
+                'Rate (₹)': st.session_state.remuneration_rates['ey_personnel'],
+                'Order No.': ref_data['order_no'],
+                'Page No.': ref_data['page_no'],
+                'Reference Remarks': ref_data.get('remarks', ''),
+                'Timestamp': datetime.now().isoformat()
+            }
+            
+            st.session_state.ey_allocation.append(allocation)
+        
+        allocation_count += 1
+    
+    return allocation_count, conflicts, warnings_confirmed
+
+# ============================================================================
+# DASHBOARD MODULE
 # ============================================================================
 
 def show_dashboard():
@@ -2394,7 +1249,7 @@ def show_dashboard():
         <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
                  color: white; border-radius: 10px; margin-bottom: 30px;'>
             <h1>📊 SYSTEM DASHBOARD</h1>
-            <p>Enhanced Deletion & Record Management System</p>
+            <p>Enhanced Date Selection System</p>
         </div>
     """, unsafe_allow_html=True)
     
@@ -2402,82 +1257,96 @@ def show_dashboard():
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        active_io = len([a for a in st.session_state.allocation 
-                        if a.get('Exam') == st.session_state.current_exam_key])
-        st.metric("👨‍💼 Active IO Allocations", active_io)
+        st.markdown(f"""
+            <div style='background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center;'>
+                <h3 style='color: #4169e1;'>👨‍💼 IO Allocations</h3>
+                <h1 style='color: #2c3e50;'>{len(st.session_state.allocation)}</h1>
+            </div>
+        """, unsafe_allow_html=True)
     
     with col2:
-        active_ey = len([a for a in st.session_state.ey_allocation 
-                        if a.get('Exam') == st.session_state.current_exam_key])
-        st.metric("👁️ Active EY Allocations", active_ey)
+        st.markdown(f"""
+            <div style='background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center;'>
+                <h3 style='color: #9370db;'>👁️ EY Allocations</h3>
+                <h1 style='color: #2c3e50;'>{len(st.session_state.ey_allocation)}</h1>
+            </div>
+        """, unsafe_allow_html=True)
     
     with col3:
-        st.metric("🗑️ Deleted Records", len(st.session_state.deleted_records))
+        st.markdown(f"""
+            <div style='background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center;'>
+                <h3 style='color: #20b2aa;'>📚 Total Exams</h3>
+                <h1 style='color: #2c3e50;'>{len(st.session_state.exam_data)}</h1>
+            </div>
+        """, unsafe_allow_html=True)
     
     with col4:
-        undo_count = len(st.session_state.undo_stack)
-        redo_count = len(st.session_state.redo_stack)
-        st.metric("↩️ Undo/Redo Stack", f"{undo_count}/{redo_count}")
+        current_exam = st.session_state.current_exam_key or "Not Selected"
+        st.markdown(f"""
+            <div style='background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center;'>
+                <h3 style='color: #ff8c00;'>🎯 Active Exam</h3>
+                <h4 style='color: #2c3e50;'>{current_exam[:20]}{'...' if len(current_exam) > 20 else ''}</h4>
+            </div>
+        """, unsafe_allow_html=True)
     
     # System Features
-    st.markdown("### 🚀 Enhanced Deletion System")
+    st.markdown("### 🚀 Enhanced Date Selection System")
     
     col_feat1, col_feat2, col_feat3 = st.columns(3)
     
     with col_feat1:
         st.markdown("""
             <div style='padding: 15px; background: #f8f9fa; border-radius: 8px;'>
-                <h4>🗑️ Three-Tier Deletion</h4>
-                <p>• Single entry deletion</p>
-                <p>• Bulk deletion by role</p>
-                <p>• Exam-wise deletion</p>
+                <h4>📅 Normal Exam Mode</h4>
+                <p>• Load dates from venue Excel</p>
+                <p>• Grid layout with color coding</p>
+                <p>• Single-click to toggle all shifts</p>
             </div>
         """, unsafe_allow_html=True)
     
     with col_feat2:
         st.markdown("""
             <div style='padding: 15px; background: #f8f9fa; border-radius: 8px;'>
-                <h4>📋 Audit Trail</h4>
-                <p>• Complete deletion history</p>
-                <p>• Mandatory references</p>
-                <p>• Searchable records</p>
+                <h4>🎭 Mock Test Mode</h4>
+                <p>• Manual date entry</p>
+                <p>• Distinct blue styling</p>
+                <p>• Separate from regular dates</p>
             </div>
         """, unsafe_allow_html=True)
     
     with col_feat3:
         st.markdown("""
             <div style='padding: 15px; background: #f8f9fa; border-radius: 8px;'>
-                <h4>🔄 Recovery Options</h4>
-                <p>• Undo/Redo functionality</p>
-                <p>• Permanent deletion control</p>
-                <p>• Backup before major deletions</p>
+                <h4>👁️ EY Personnel Mode</h4>
+                <p>• Multi-venue selection</p>
+                <p>• Assign to all selected venues</p>
+                <p>• Advanced conflict checking</p>
             </div>
         """, unsafe_allow_html=True)
     
     # Quick Actions
     st.markdown("### ⚡ Quick Actions")
     
-    col_act1, col_act2, col_act3, col_act4 = st.columns(4)
+    col_act1, col_act2, col_act3 = st.columns(3)
     
     with col_act1:
-        if st.button("🗑️ View Deleted Records", use_container_width=True):
-            st.session_state.menu = "deleted_records"
+        if st.button("📥 Load Default Data", use_container_width=True):
+            load_default_master_data()
             st.rerun()
     
     with col_act2:
-        if st.button("📋 Manage References", use_container_width=True):
-            st.session_state.menu = "references"
+        if st.button("🔄 Refresh Data", use_container_width=True):
+            load_all_data()
             st.rerun()
     
     with col_act3:
-        if st.button("↩️ Undo Last Action", use_container_width=True, disabled=len(st.session_state.undo_stack) == 0):
-            perform_undo()
-            st.rerun()
-    
-    with col_act4:
         if st.button("📊 View All Reports", use_container_width=True):
             st.session_state.menu = "reports"
             st.rerun()
+
+# ============================================================================
+# EXAM MANAGEMENT MODULE
+# ============================================================================
 
 def show_exam_management():
     """Display exam management interface"""
@@ -2485,7 +1354,6 @@ def show_exam_management():
         <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #20b2aa 0%, #3cb371 100%); 
                  color: white; border-radius: 10px; margin-bottom: 30px;'>
             <h1>📝 EXAM MANAGEMENT</h1>
-            <p>With Exam-Wise Deletion</p>
         </div>
     """, unsafe_allow_html=True)
     
@@ -2500,38 +1368,35 @@ def show_exam_management():
         year_options = [str(y) for y in range(current_year - 5, current_year + 3)]
         exam_year = st.selectbox("Exam Year:", year_options, index=0)
         
-        col_create1, col_create2 = st.columns(2)
-        
-        with col_create1:
-            if st.button("✅ Create/Update Exam", use_container_width=True):
-                if exam_name.strip():
-                    exam_key = f"{exam_name.strip()} - {exam_year}"
-                    
-                    st.session_state.current_exam_key = exam_key
-                    st.session_state.exam_name = exam_name.strip()
-                    st.session_state.exam_year = exam_year
-                    
-                    if exam_key not in st.session_state.exam_data:
-                        st.session_state.exam_data[exam_key] = {
-                            'io_allocations': [],
-                            'ey_allocations': []
-                        }
-                        st.success(f"🎉 New exam '{exam_key}' created!")
-                    else:
-                        exam_data = st.session_state.exam_data[exam_key]
-                        if isinstance(exam_data, dict):
-                            st.session_state.allocation = exam_data.get('io_allocations', [])
-                            st.session_state.ey_allocation = exam_data.get('ey_allocations', [])
-                        else:
-                            st.session_state.allocation = exam_data
-                            st.session_state.ey_allocation = []
-                        
-                        st.success(f"📂 Exam '{exam_key}' loaded!")
-                    
-                    save_all_data()
-                    st.rerun()
+        if st.button("✅ Create/Update Exam", use_container_width=True):
+            if exam_name.strip():
+                exam_key = f"{exam_name.strip()} - {exam_year}"
+                
+                st.session_state.current_exam_key = exam_key
+                st.session_state.exam_name = exam_name.strip()
+                st.session_state.exam_year = exam_year
+                
+                if exam_key not in st.session_state.exam_data:
+                    st.session_state.exam_data[exam_key] = {
+                        'io_allocations': [],
+                        'ey_allocations': []
+                    }
+                    st.success(f"🎉 New exam '{exam_key}' created!")
                 else:
-                    st.error("Please enter an exam name")
+                    exam_data = st.session_state.exam_data[exam_key]
+                    if isinstance(exam_data, dict):
+                        st.session_state.allocation = exam_data.get('io_allocations', [])
+                        st.session_state.ey_allocation = exam_data.get('ey_allocations', [])
+                    else:
+                        st.session_state.allocation = exam_data
+                        st.session_state.ey_allocation = []
+                    
+                    st.success(f"📂 Exam '{exam_key}' loaded!")
+                
+                save_all_data()
+                st.rerun()
+            else:
+                st.error("Please enter an exam name")
     
     with col2:
         st.markdown("### 📂 Select Existing Exam")
@@ -2540,42 +1405,703 @@ def show_exam_management():
         if exams:
             selected_exam = st.selectbox("Choose Exam:", exams, index=0)
             
-            col_load1, col_load2 = st.columns(2)
-            
-            with col_load1:
-                if st.button("📥 Load Exam", use_container_width=True):
-                    st.session_state.current_exam_key = selected_exam
-                    
-                    exam_data = st.session_state.exam_data[selected_exam]
-                    if isinstance(exam_data, dict):
-                        st.session_state.allocation = exam_data.get('io_allocations', [])
-                        st.session_state.ey_allocation = exam_data.get('ey_allocations', [])
-                    else:
-                        st.session_state.allocation = exam_data
-                        st.session_state.ey_allocation = []
-                    
-                    if " - " in selected_exam:
-                        name, year = selected_exam.split(" - ", 1)
-                        st.session_state.exam_name = name
-                        st.session_state.exam_year = year
-                    
-                    st.success(f"✅ Exam loaded successfully!")
-                    st.rerun()
-            
-            with col_load2:
-                if st.button("🗑️ Delete Exam", type="secondary", use_container_width=True):
-                    st.session_state.deletion_mode = "exam"
-                    st.rerun()
+            if st.button("📥 Load Selected Exam", use_container_width=True):
+                st.session_state.current_exam_key = selected_exam
+                
+                exam_data = st.session_state.exam_data[selected_exam]
+                if isinstance(exam_data, dict):
+                    st.session_state.allocation = exam_data.get('io_allocations', [])
+                    st.session_state.ey_allocation = exam_data.get('ey_allocations', [])
+                else:
+                    st.session_state.allocation = exam_data
+                    st.session_state.ey_allocation = []
+                
+                if " - " in selected_exam:
+                    name, year = selected_exam.split(" - ", 1)
+                    st.session_state.exam_name = name
+                    st.session_state.exam_year = year
+                
+                st.success(f"✅ Exam loaded successfully!")
+                st.rerun()
         else:
             st.info("No exams available")
+
+# ============================================================================
+# CENTRE COORDINATOR MODULE - WITH ENHANCED DATE SELECTION
+# ============================================================================
+
+def show_centre_coordinator():
+    """Display Centre Coordinator allocation interface"""
+    st.markdown("""
+        <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #4169e1 0%, #6ca0dc 100%); 
+                 color: white; border-radius: 10px; margin-bottom: 30px;'>
+            <h1>👨‍💼 CENTRE COORDINATOR ALLOCATION</h1>
+            <p>Enhanced Date Selection System</p>
+        </div>
+    """, unsafe_allow_html=True)
     
-    # Exam deletion dialog
-    if st.session_state.deletion_mode == "exam":
-        show_exam_deletion_dialog()
+    # Check if exam is selected
+    if not st.session_state.current_exam_key:
+        st.error("⚠️ Please select or create an exam first")
+        return
     
-    # Current allocations display
-    if st.session_state.current_exam_key:
-        show_allocation_table_with_controls()
+    # Master Data Loading
+    st.markdown("### 📁 Master Data Management")
+    
+    col_data1, col_data2, col_data3 = st.columns(3)
+    
+    with col_data1:
+        if st.button("📤 Load IO Master", use_container_width=True):
+            st.session_state.show_io_upload = True
+    
+    with col_data2:
+        if st.button("📤 Load Venue List", use_container_width=True):
+            st.session_state.show_venue_upload = True
+    
+    # Show file uploaders
+    if st.session_state.show_io_upload:
+        uploaded_io = st.file_uploader("Upload Centre Coordinator Master (Excel)", type=['xlsx', 'xls'], key="io_master_upload")
+        if uploaded_io:
+            try:
+                st.session_state.io_df = pd.read_excel(uploaded_io)
+                st.session_state.io_df.columns = [str(col).strip().upper() for col in st.session_state.io_df.columns]
+                
+                required_cols = ["NAME", "AREA", "CENTRE_CODE"]
+                missing_cols = [col for col in required_cols if col not in st.session_state.io_df.columns]
+                
+                if missing_cols:
+                    st.error(f"❌ Missing columns: {', '.join(missing_cols)}")
+                else:
+                    st.session_state.io_master_loaded = True
+                    st.success(f"✅ Loaded {len(st.session_state.io_df)} IO records")
+                    st.session_state.show_io_upload = False
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+    
+    if st.session_state.show_venue_upload:
+        uploaded_venue = st.file_uploader("Upload Venue List (Excel)", type=['xlsx', 'xls'], key="venue_upload")
+        if uploaded_venue:
+            try:
+                st.session_state.venue_df = pd.read_excel(uploaded_venue)
+                st.session_state.venue_df.columns = [str(col).strip().upper() for col in st.session_state.venue_df.columns]
+                
+                required_cols = ["VENUE", "DATE", "SHIFT"]
+                missing_cols = [col for col in required_cols if col not in st.session_state.venue_df.columns]
+                
+                if missing_cols:
+                    st.error(f"❌ Missing columns: {', '.join(missing_cols)}")
+                else:
+                    if 'DATE' in st.session_state.venue_df.columns:
+                        st.session_state.venue_df['DATE'] = pd.to_datetime(
+                            st.session_state.venue_df['DATE'], errors='coerce'
+                        ).dt.strftime('%d-%m-%Y')
+                    
+                    if 'SHIFT' in st.session_state.venue_df.columns:
+                        st.session_state.venue_df['SHIFT'] = st.session_state.venue_df['SHIFT'].astype(str).str.strip()
+                        st.session_state.venue_df['SHIFT'] = st.session_state.venue_df['SHIFT'].replace('nan', '')
+                    
+                    if 'VENUE' in st.session_state.venue_df.columns:
+                        st.session_state.venue_df['VENUE'] = st.session_state.venue_df['VENUE'].astype(str).str.strip()
+                    
+                    st.session_state.venue_df = st.session_state.venue_df[
+                        (st.session_state.venue_df['VENUE'].notna()) & 
+                        (st.session_state.venue_df['VENUE'] != '') &
+                        (st.session_state.venue_df['DATE'].notna()) & 
+                        (st.session_state.venue_df['DATE'] != '')
+                    ]
+                    
+                    st.session_state.venue_master_loaded = True
+                    st.success(f"✅ Loaded {len(st.session_state.venue_df)} venue records")
+                    st.session_state.show_venue_upload = False
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+    
+    # Check required data
+    if not st.session_state.venue_master_loaded:
+        st.warning("⚠️ Please load venue list first")
+        return
+    
+    if not st.session_state.io_master_loaded:
+        st.warning("⚠️ Please load IO master data first")
+        return
+    
+    # Selection Parameters
+    st.markdown("### 🎯 Selection Parameters")
+    
+    col_param1, col_param2 = st.columns(2)
+    
+    with col_param1:
+        # Role selection
+        role = st.selectbox("Select Role:", ["Centre Coordinator", "Flying Squad"], key="role_select")
+        st.session_state.selected_role = role
+    
+    # Enhanced Date Selection
+    if st.session_state.mock_test_mode:
+        st.info("🎭 **Mock Test Mode Active** - Enter mock test dates manually")
+    
+    # Use enhanced date selection system
+    selected_date_shifts = create_enhanced_date_selection_grid("IO")
+    
+    # Display selection summary
+    if selected_date_shifts:
+        # Group by date for better display
+        date_groups = {}
+        for ds in selected_date_shifts:
+            date_key = ds['date']
+            if date_key not in date_groups:
+                date_groups[date_key] = []
+            shift_info = f"{ds['shift']}{' (Mock)' if ds['is_mock'] else ''}"
+            if ds['venue'] not in [v for v, _ in date_groups[date_key]]:
+                date_groups[date_key].append((ds['venue'], shift_info))
+        
+        st.success(f"✅ Selected {len(selected_date_shifts)} date-shift combination(s)")
+        
+        with st.expander("📋 View Selection Details"):
+            for date, venues in sorted(date_groups.items()):
+                st.write(f"**{date}:**")
+                for venue, shift in venues:
+                    st.write(f"  - {venue}: {shift}")
+    else:
+        st.info("Select dates above to continue")
+    
+    # IO Selection
+    st.markdown("### 👥 Centre Coordinator Selection")
+    
+    # Filter IOs
+    filtered_io = st.session_state.io_df.copy()
+    
+    # Search functionality
+    search_term = st.text_input("🔍 Search Centre Coordinator:", placeholder="Search by name or area...")
+    
+    if search_term:
+        filtered_io = filtered_io[
+            (filtered_io['NAME'].str.lower().str.contains(search_term.lower())) |
+            (filtered_io['AREA'].str.lower().str.contains(search_term.lower()))
+        ]
+    
+    if not filtered_io.empty and selected_date_shifts:
+        st.write(f"**Available Centre Coordinators ({len(filtered_io)} found):**")
+        
+        # Display IOs
+        for idx, row in filtered_io.iterrows():
+            name = row.get('NAME', 'N/A')
+            area = row.get('AREA', 'N/A')
+            designation = row.get('DESIGNATION', 'N/A')
+            
+            # Check existing allocations
+            existing_allocations = [
+                a for a in st.session_state.allocation 
+                if a['IO Name'] == name and a.get('Exam') == st.session_state.current_exam_key
+            ]
+            
+            with st.expander(f"👤 {name} ({area})", expanded=False):
+                col_info1, col_info2 = st.columns(2)
+                
+                with col_info1:
+                    st.write(f"**Designation:** {designation}")
+                    st.write(f"**Area:** {area}")
+                
+                with col_info2:
+                    st.write(f"**Mobile:** {row.get('MOBILE', 'N/A')}")
+                    st.write(f"**Email:** {row.get('EMAIL', 'N/A')}")
+                
+                # Allocation button
+                if st.button(f"✅ Allocate {name}", key=f"alloc_btn_{idx}", use_container_width=True):
+                    st.session_state.current_allocation_person = name
+                    st.session_state.current_allocation_area = area
+                    st.session_state.current_allocation_role = role
+                    st.session_state.current_allocation_type = "IO"
+                    st.rerun()
+    elif not selected_date_shifts:
+        st.info("Select dates above to enable allocation")
+    else:
+        st.warning("No Centre Coordinators found")
+    
+    # Handle allocation
+    if st.session_state.current_allocation_person and st.session_state.current_allocation_type == "IO":
+        # Show reference selection
+        st.markdown(f"### 📋 Reference for {st.session_state.current_allocation_person}")
+        ref_data = get_or_create_reference(st.session_state.current_allocation_role)
+        
+        if ref_data is not None:
+            # Perform allocation
+            allocation_count, conflicts, warnings = perform_allocation_with_conflict_check(
+                st.session_state.current_allocation_person,
+                selected_date_shifts,
+                st.session_state.current_allocation_role,
+                "IO",
+                ref_data
+            )
+            
+            # Update exam data
+            exam_key = st.session_state.current_exam_key
+            if exam_key not in st.session_state.exam_data:
+                st.session_state.exam_data[exam_key] = {}
+            
+            st.session_state.exam_data[exam_key]['io_allocations'] = st.session_state.allocation
+            
+            # Save data
+            save_all_data()
+            
+            # Clear allocation state
+            st.session_state.current_allocation_person = None
+            st.session_state.current_allocation_area = None
+            st.session_state.current_allocation_role = None
+            st.session_state.current_allocation_type = None
+            
+            if allocation_count > 0:
+                success_msg = f"✅ Allocated {st.session_state.current_allocation_person} to {allocation_count} date-shift combination(s)"
+                
+                if warnings:
+                    success_msg += f"\n\n⚠️ {len(warnings)} warning(s) confirmed"
+                
+                if conflicts:
+                    conflict_details = "\n".join([c['message'] for c in conflicts[:3]])
+                    if len(conflicts) > 3:
+                        conflict_details += f"\n... and {len(conflicts) - 3} more"
+                    st.error(f"❌ {len(conflicts)} conflict(s) prevented allocation:\n\n{conflict_details}")
+                
+                st.success(success_msg)
+                st.rerun()
+            else:
+                if conflicts:
+                    st.error(f"❌ No allocations made due to {len(conflicts)} conflict(s)")
+                else:
+                    st.error("❌ No allocations made")
+    
+    # Current Allocations Display
+    if st.session_state.allocation:
+        st.markdown("---")
+        st.markdown("### 📋 Current Allocations")
+        
+        alloc_df = pd.DataFrame(st.session_state.allocation)
+        
+        # Filter by current exam
+        current_allocations = alloc_df[alloc_df['Exam'] == st.session_state.current_exam_key]
+        
+        if not current_allocations.empty:
+            st.dataframe(
+                current_allocations[['Sl. No.', 'IO Name', 'Venue', 'Date', 'Shift', 'Role', 'Mock Test']],
+                use_container_width=True,
+                hide_index=True
+            )
+
+# ============================================================================
+# EY PERSONNEL MODULE - WITH ENHANCED DATE SELECTION
+# ============================================================================
+
+def show_ey_personnel():
+    """Display EY Personnel allocation interface"""
+    st.markdown("""
+        <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #9370db 0%, #8a2be2 100%); 
+                 color: white; border-radius: 10px; margin-bottom: 30px;'>
+            <h1>👁️ EY PERSONNEL ALLOCATION</h1>
+            <p>Multi-Venue Date Selection System</p>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    # Check if exam is selected
+    if not st.session_state.current_exam_key:
+        st.error("⚠️ Please select or create an exam first")
+        return
+    
+    # Mode switch
+    col_mode1, col_mode2 = st.columns(2)
+    with col_mode1:
+        if st.checkbox("👨‍💼 Switch to Centre Coordinator"):
+            st.session_state.menu = "io"
+            st.rerun()
+    
+    # Master Data Loading
+    st.markdown("### 📁 EY Master Data")
+    
+    if st.button("📤 Load EY Master", use_container_width=True):
+        st.session_state.show_ey_upload = True
+    
+    # EY Rate Setting
+    ey_rate = st.number_input("💰 EY Rate per Day (₹):", value=st.session_state.remuneration_rates['ey_personnel'], min_value=0, step=100)
+    if ey_rate != st.session_state.remuneration_rates['ey_personnel']:
+        st.session_state.remuneration_rates['ey_personnel'] = ey_rate
+        save_all_data()
+    
+    # Show EY uploader
+    if st.session_state.show_ey_upload:
+        uploaded_ey = st.file_uploader("Upload EY Personnel Master (Excel)", type=['xlsx', 'xls'], key="ey_master_upload")
+        if uploaded_ey:
+            try:
+                st.session_state.ey_df = pd.read_excel(uploaded_ey)
+                st.session_state.ey_df.columns = [str(col).strip().upper() for col in st.session_state.ey_df.columns]
+                
+                if 'NAME' not in st.session_state.ey_df.columns:
+                    st.error("❌ Missing required column: NAME")
+                else:
+                    optional_cols = ["MOBILE", "EMAIL", "ID_NUMBER", "DESIGNATION", "DEPARTMENT"]
+                    for col in optional_cols:
+                        if col not in st.session_state.ey_df.columns:
+                            st.session_state.ey_df[col] = ""
+                    
+                    st.session_state.ey_master_loaded = True
+                    st.success(f"✅ Loaded {len(st.session_state.ey_df)} EY personnel records")
+                    st.session_state.show_ey_upload = False
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+    
+    # Check for required data
+    if not st.session_state.ey_master_loaded:
+        st.warning("⚠️ Please load EY master data first")
+        return
+    
+    if not st.session_state.venue_master_loaded:
+        st.warning("⚠️ Please load venue list from Centre Coordinator section")
+        return
+    
+    # Enhanced Date Selection for EY Mode
+    selected_date_shifts = create_enhanced_date_selection_grid("EY")
+    
+    if selected_date_shifts:
+        # Display selection summary
+        st.success(f"✅ Selected {len(selected_date_shifts)} date-shift-venue combination(s)")
+        
+        # Group by venue for better display
+        venue_groups = {}
+        for ds in selected_date_shifts:
+            venue = ds['venue']
+            if venue not in venue_groups:
+                venue_groups[venue] = []
+            date_shift = f"{ds['date']} ({ds['shift']})"
+            if date_shift not in venue_groups[venue]:
+                venue_groups[venue].append(date_shift)
+        
+        with st.expander("📋 View Allocation Plan"):
+            for venue, dates in sorted(venue_groups.items()):
+                st.write(f"**{venue}:**")
+                for date_shift in sorted(dates):
+                    st.write(f"  - {date_shift}")
+    else:
+        st.info("Select dates above to continue")
+        return
+    
+    # EY Personnel Selection
+    st.markdown("### 👥 EY Personnel Selection")
+    
+    # Search functionality
+    search_term = st.text_input("🔍 Search EY Personnel:", placeholder="Search by name, department, or ID...")
+    
+    if search_term:
+        filtered_ey = st.session_state.ey_df[
+            (st.session_state.ey_df['NAME'].str.lower().str.contains(search_term.lower())) |
+            (st.session_state.ey_df['DEPARTMENT'].str.lower().str.contains(search_term.lower()))
+        ]
+    else:
+        filtered_ey = st.session_state.ey_df
+    
+    if not filtered_ey.empty:
+        st.write(f"**Available EY Personnel ({len(filtered_ey)} found):**")
+        
+        # Display EY personnel
+        selected_ey = st.selectbox("Select EY Personnel:", filtered_ey['NAME'].tolist(), key="ey_person_select")
+        
+        if selected_ey:
+            # Show details
+            ey_row = filtered_ey[filtered_ey['NAME'] == selected_ey].iloc[0]
+            
+            col_details1, col_details2 = st.columns(2)
+            with col_details1:
+                st.write(f"**ID:** {ey_row.get('ID_NUMBER', 'N/A')}")
+                st.write(f"**Designation:** {ey_row.get('DESIGNATION', 'N/A')}")
+            with col_details2:
+                st.write(f"**Department:** {ey_row.get('DEPARTMENT', 'N/A')}")
+                st.write(f"**Mobile:** {ey_row.get('MOBILE', 'N/A')}")
+            
+            # Allocation button
+            if st.button(f"✅ Allocate {selected_ey} to Selected Dates", use_container_width=True):
+                st.session_state.current_allocation_person = selected_ey
+                st.session_state.current_allocation_ey_row = ey_row.to_dict()
+                st.session_state.current_allocation_type = "EY"
+                st.rerun()
+    else:
+        st.warning("No EY personnel found")
+    
+    # Handle EY allocation
+    if st.session_state.current_allocation_person and st.session_state.current_allocation_type == "EY":
+        # Show reference selection
+        st.markdown(f"### 📋 Reference for {st.session_state.current_allocation_person}")
+        ref_data = get_or_create_reference("EY Personnel")
+        
+        if ref_data is not None:
+            # Perform allocation
+            allocation_count, conflicts, warnings = perform_allocation_with_conflict_check(
+                st.session_state.current_allocation_person,
+                selected_date_shifts,
+                "",
+                "EY",
+                ref_data
+            )
+            
+            # Update exam data
+            exam_key = st.session_state.current_exam_key
+            if exam_key not in st.session_state.exam_data:
+                st.session_state.exam_data[exam_key] = {}
+            
+            st.session_state.exam_data[exam_key]['ey_allocations'] = st.session_state.ey_allocation
+            
+            # Save data
+            save_all_data()
+            
+            # Clear allocation state
+            st.session_state.current_allocation_person = None
+            st.session_state.current_allocation_ey_row = None
+            st.session_state.current_allocation_type = None
+            
+            if allocation_count > 0:
+                success_msg = f"✅ Allocated {st.session_state.current_allocation_person} to {allocation_count} date-shift combinations"
+                
+                if conflicts:
+                    conflict_details = "\n".join([c['message'] for c in conflicts[:3]])
+                    if len(conflicts) > 3:
+                        conflict_details += f"\n... and {len(conflicts) - 3} more"
+                    st.error(f"❌ {len(conflicts)} conflict(s) prevented allocation:\n\n{conflict_details}")
+                
+                st.success(success_msg)
+                st.rerun()
+            else:
+                if conflicts:
+                    st.error(f"❌ No allocations made due to {len(conflicts)} conflict(s)")
+                else:
+                    st.error("❌ No allocations made")
+    
+    # Current EY Allocations
+    if st.session_state.ey_allocation:
+        st.markdown("---")
+        st.markdown("### 📋 Current EY Allocations")
+        
+        ey_df = pd.DataFrame(st.session_state.ey_allocation)
+        
+        # Filter by current exam
+        current_ey = ey_df[ey_df['Exam'] == st.session_state.current_exam_key]
+        
+        if not current_ey.empty:
+            st.dataframe(
+                current_ey[['Sl. No.', 'EY Personnel', 'Venue', 'Date', 'Shift', 'Rate (₹)']],
+                use_container_width=True,
+                hide_index=True
+            )
+
+# ============================================================================
+# REPORTS MODULE
+# ============================================================================
+
+def show_reports():
+    """Display reports interface"""
+    st.markdown("""
+        <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #ff8c00 0%, #ffa500 100%); 
+                 color: white; border-radius: 10px; margin-bottom: 30px;'>
+            <h1>📊 REPORTS & EXPORTS</h1>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    tab1, tab2 = st.tabs(["📋 Allocation Reports", "💰 Remuneration Reports"])
+    
+    with tab1:
+        show_allocation_reports()
+    
+    with tab2:
+        show_remuneration_reports()
+
+def show_allocation_reports():
+    """Display allocation reports"""
+    st.markdown("### 📋 Allocation Reports")
+    
+    if not st.session_state.allocation and not st.session_state.ey_allocation:
+        st.info("No allocation data available")
+        return
+    
+    if st.session_state.allocation:
+        alloc_df = pd.DataFrame(st.session_state.allocation)
+        
+        # Show summary
+        col_stat1, col_stat2, col_stat3 = st.columns(3)
+        with col_stat1:
+            st.metric("Total IO Allocations", len(alloc_df))
+        with col_stat2:
+            st.metric("Unique IOs", alloc_df['IO Name'].nunique())
+        with col_stat3:
+            st.metric("Total Days", alloc_df['Date'].nunique())
+        
+        # Show preview
+        with st.expander("Preview IO Allocations"):
+            st.dataframe(
+                alloc_df[['Sl. No.', 'IO Name', 'Venue', 'Date', 'Shift', 'Role', 'Mock Test']].head(10),
+                use_container_width=True,
+                hide_index=True
+            )
+    
+    if st.session_state.ey_allocation:
+        st.markdown("##### EY Allocations")
+        ey_df = pd.DataFrame(st.session_state.ey_allocation)
+        
+        col_ey1, col_ey2 = st.columns(2)
+        with col_ey1:
+            st.metric("Total EY Allocations", len(ey_df))
+        with col_ey2:
+            st.metric("Unique EY Personnel", ey_df['EY Personnel'].nunique())
+        
+        with st.expander("Preview EY Allocations"):
+            st.dataframe(
+                ey_df[['Sl. No.', 'EY Personnel', 'Venue', 'Date', 'Shift', 'Rate (₹)']].head(10),
+                use_container_width=True,
+                hide_index=True
+            )
+
+def show_remuneration_reports():
+    """Display remuneration reports"""
+    st.markdown("### 💰 Remuneration Reports")
+    
+    if not st.session_state.allocation and not st.session_state.ey_allocation:
+        st.info("No allocation data available")
+        return
+    
+    if st.session_state.allocation:
+        # Calculate IO remuneration
+        alloc_df = pd.DataFrame(st.session_state.allocation)
+        
+        total_io_amount = 0
+        for (io_name, date), group in alloc_df.groupby(['IO Name', 'Date']):
+            shifts = len(group)
+            is_mock = any(group['Mock Test'])
+            
+            if is_mock:
+                amount = st.session_state.remuneration_rates['mock_test']
+            else:
+                if shifts > 1:
+                    amount = st.session_state.remuneration_rates['multiple_shifts']
+                else:
+                    amount = st.session_state.remuneration_rates['single_shift']
+            
+            total_io_amount += amount
+        
+        col_rem1, col_rem2 = st.columns(2)
+        with col_rem1:
+            st.metric("Total IO Remuneration", f"₹{total_io_amount:,}")
+        
+        # Calculate EY remuneration
+        if st.session_state.ey_allocation:
+            ey_df = pd.DataFrame(st.session_state.ey_allocation)
+            total_ey_days = ey_df['Date'].nunique()
+            total_ey_amount = total_ey_days * st.session_state.remuneration_rates['ey_personnel']
+            
+            with col_rem2:
+                st.metric("Total EY Remuneration", f"₹{total_ey_amount:,}")
+        
+        # Grand total
+        grand_total = total_io_amount + (total_ey_amount if 'total_ey_amount' in locals() else 0)
+        st.metric("Grand Total", f"₹{grand_total:,}")
+
+# ============================================================================
+# SETTINGS MODULE
+# ============================================================================
+
+def show_settings():
+    """Display system settings"""
+    st.markdown("""
+        <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); 
+                 color: white; border-radius: 10px; margin-bottom: 30px;'>
+            <h1>⚙️ SYSTEM SETTINGS</h1>
+        </div>
+    """, unsafe_allow_html=True)
+    
+    tab1, tab2 = st.tabs(["💰 Remuneration Rates", "🛠️ Data Management"])
+    
+    with tab1:
+        show_remuneration_settings()
+    
+    with tab2:
+        show_data_management()
+
+def show_remuneration_settings():
+    """Display remuneration rate settings"""
+    st.markdown("### 💰 Remuneration Rates Configuration")
+    
+    col_rate1, col_rate2 = st.columns(2)
+    
+    with col_rate1:
+        multiple_shifts = st.number_input(
+            "Multiple Shifts (₹):",
+            min_value=0,
+            value=st.session_state.remuneration_rates['multiple_shifts'],
+            step=50
+        )
+        
+        single_shift = st.number_input(
+            "Single Shift (₹):",
+            min_value=0,
+            value=st.session_state.remuneration_rates['single_shift'],
+            step=50
+        )
+    
+    with col_rate2:
+        mock_test = st.number_input(
+            "Mock Test (₹):",
+            min_value=0,
+            value=st.session_state.remuneration_rates['mock_test'],
+            step=50
+        )
+        
+        ey_personnel = st.number_input(
+            "EY Personnel (₹ per day):",
+            min_value=0,
+            value=st.session_state.remuneration_rates['ey_personnel'],
+            step=100
+        )
+    
+    if st.button("💾 Save Rates", use_container_width=True):
+        st.session_state.remuneration_rates = {
+            'multiple_shifts': multiple_shifts,
+            'single_shift': single_shift,
+            'mock_test': mock_test,
+            'ey_personnel': ey_personnel
+        }
+        
+        save_all_data()
+        st.success("✅ Remuneration rates saved!")
+
+def show_data_management():
+    """Display data management options"""
+    st.markdown("### 🛠️ Data Management")
+    
+    # Backup Management
+    st.markdown("#### 💾 Backup Management")
+    
+    col_back1, col_back2 = st.columns(2)
+    
+    with col_back1:
+        backup_desc = st.text_input("Backup Description:", placeholder="Optional description")
+        
+        if st.button("🔒 Create New Backup", use_container_width=True):
+            backup_file = create_backup(backup_desc)
+            if backup_file:
+                st.success(f"✅ Backup created: {backup_file.name}")
+            else:
+                st.error("❌ Failed to create backup")
+    
+    with col_back2:
+        backup_files = list(BACKUP_DIR.glob("*.json"))
+        if backup_files:
+            backup_options = [f"{f.name}" for f in sorted(backup_files, reverse=True)]
+            selected_backup = st.selectbox("Select Backup:", backup_options)
+            
+            if st.button("🔄 Restore Backup", type="secondary", use_container_width=True):
+                backup_filename = selected_backup.split(" (")[0]
+                backup_file = BACKUP_DIR / backup_filename
+                
+                if st.checkbox("I understand this will overwrite current data"):
+                    if restore_from_backup(backup_file):
+                        st.success("✅ Backup restored successfully!")
+                        st.rerun()
+                    else:
+                        st.error("❌ Failed to restore backup")
+        else:
+            st.info("No backup files available")
 
 # ============================================================================
 # MAIN APPLICATION
@@ -2586,7 +2112,7 @@ def main():
     try:
         # Configure page
         st.set_page_config(
-            page_title="SSC (ER) Kolkata - Enhanced Deletion System",
+            page_title="SSC (ER) Kolkata - Enhanced Allocation System",
             page_icon="🏛️",
             layout="wide",
             initial_sidebar_state="expanded"
@@ -2636,23 +2162,6 @@ def main():
             
             #MainMenu {visibility: hidden;}
             footer {visibility: hidden;}
-            
-            /* Deletion warning colors */
-            .deletion-warning {
-                background-color: #fff3cd;
-                border: 1px solid #ffeaa7;
-                border-radius: 8px;
-                padding: 10px;
-                margin: 10px 0;
-            }
-            
-            .audit-record {
-                background-color: #f8f9fa;
-                border-left: 4px solid #6c757d;
-                padding: 10px;
-                margin: 5px 0;
-                border-radius: 4px;
-            }
             </style>
         """, unsafe_allow_html=True)
         
@@ -2667,7 +2176,7 @@ def main():
             st.markdown("""
                 <div style='text-align: center; padding: 20px 0;'>
                     <h2>📋 Navigation</h2>
-                    <p style='font-size: 0.9rem; color: #bdc3c7;'>Enhanced Deletion System</p>
+                    <p style='font-size: 0.9rem; color: #bdc3c7;'>Enhanced Date Selection System</p>
                 </div>
             """, unsafe_allow_html=True)
             
@@ -2678,8 +2187,6 @@ def main():
                 "👨‍💼 Centre Coordinator": "io",
                 "👁️ EY Personnel": "ey",
                 "📊 Reports": "reports",
-                "🗑️ Deleted Records": "deleted_records",
-                "📋 References": "references",
                 "⚙️ Settings": "settings"
             }
             
@@ -2714,26 +2221,17 @@ def main():
             
             st.markdown("---")
             
-            # Quick actions with undo/redo
+            # Quick actions
             st.markdown("### ⚡ Quick Actions")
             
-            col_q1, col_q2, col_q3 = st.columns(3)
-            
+            col_q1, col_q2 = st.columns(2)
             with col_q1:
                 if st.button("💾 Save", use_container_width=True):
                     save_all_data()
                     st.success("Data saved!")
             
             with col_q2:
-                undo_disabled = len(st.session_state.undo_stack) == 0
-                if st.button("↩️ Undo", use_container_width=True, disabled=undo_disabled):
-                    perform_undo()
-                    st.rerun()
-            
-            with col_q3:
-                redo_disabled = len(st.session_state.redo_stack) == 0
-                if st.button("↪️ Redo", use_container_width=True, disabled=redo_disabled):
-                    perform_redo()
+                if st.button("🔄 Refresh", use_container_width=True):
                     st.rerun()
             
             if st.button("📥 Load Defaults", use_container_width=True):
@@ -2742,48 +2240,19 @@ def main():
         
         # Main content area
         try:
-            # Handle deletion dialogs first
-            if st.session_state.show_deletion_dialog:
-                if st.session_state.deletion_mode == "single" and st.session_state.selected_deletions:
-                    record = st.session_state.selected_deletions[0]
-                    record_type = "IO" if 'IO Name' in record else "EY"
-                    show_deletion_dialog(record, record_type)
-                elif st.session_state.deletion_mode == "bulk":
-                    show_bulk_deletion_dialog()
-            
-            # Handle bulk delete interface
-            if st.session_state.show_bulk_delete:
-                show_bulk_delete_interface()
-                if st.button("← Back to Allocations", use_container_width=True):
-                    st.session_state.show_bulk_delete = False
-                    st.rerun()
-                return
-            
             # Display selected module
             if st.session_state.menu == "dashboard":
                 show_dashboard()
             elif st.session_state.menu == "exam":
                 show_exam_management()
             elif st.session_state.menu == "io":
-                # Show existing centre coordinator module (not included in this code for brevity)
-                st.info("Centre Coordinator module with enhanced date selection")
-                # show_centre_coordinator() would go here
+                show_centre_coordinator()
             elif st.session_state.menu == "ey":
-                # Show existing EY module (not included in this code for brevity)
-                st.info("EY Personnel module with enhanced date selection")
-                # show_ey_personnel() would go here
+                show_ey_personnel()
             elif st.session_state.menu == "reports":
-                # Show existing reports module (not included in this code for brevity)
-                st.info("Reports module")
-                # show_reports() would go here
-            elif st.session_state.menu == "deleted_records":
-                show_deleted_records_manager()
-            elif st.session_state.menu == "references":
-                show_reference_management()
+                show_reports()
             elif st.session_state.menu == "settings":
-                # Show existing settings module (not included in this code for brevity)
-                st.info("Settings module")
-                # show_settings() would go here
+                show_settings()
             else:
                 show_dashboard()
                 
