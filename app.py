@@ -66,70 +66,70 @@ COLORS = {
 }
 
 # ============================================================================
-# SESSION STATE MANAGEMENT
+# SESSION STATE MANAGEMENT - COMPLETE INITIALIZATION
 # ============================================================================
 
 def initialize_session_state():
     """Initialize all session state variables"""
     # Data storage
-    if 'io_df' not in st.session_state:
-        st.session_state.io_df = pd.DataFrame()
-    if 'venue_df' not in st.session_state:
-        st.session_state.venue_df = pd.DataFrame()
-    if 'ey_df' not in st.session_state:
-        st.session_state.ey_df = pd.DataFrame()
-    if 'allocation' not in st.session_state:
-        st.session_state.allocation = []
-    if 'ey_allocation' not in st.session_state:
-        st.session_state.ey_allocation = []
-    if 'deleted_records' not in st.session_state:
-        st.session_state.deleted_records = []
+    default_values = {
+        'io_df': pd.DataFrame(),
+        'venue_df': pd.DataFrame(),
+        'ey_df': pd.DataFrame(),
+        'allocation': [],
+        'ey_allocation': [],
+        'deleted_records': [],
+        
+        # Configuration
+        'remuneration_rates': DEFAULT_RATES.copy(),
+        'exam_data': {},
+        'allocation_references': {},
+        
+        # Current state
+        'current_exam_key': "",
+        'exam_name': "",
+        'exam_year': "",
+        'mock_test_mode': False,
+        'ey_allocation_mode': False,
+        
+        # UI state
+        'selected_venue': "",
+        'selected_role': "Centre Coordinator",
+        'selected_dates': [],
+        'selected_io': "",
+        'selected_ey': "",
+        
+        # Date selection state
+        'date_selection_state': {},
+        'expanded_dates': {},
+        
+        # File upload tracking
+        'io_master_loaded': False,
+        'venue_master_loaded': False,
+        'ey_master_loaded': False,
+        
+        # Current allocation state (for reference handling)
+        'current_allocation_person': None,
+        'current_allocation_area': None,
+        'current_allocation_role': None,
+        'current_allocation_type': None,
+        'current_allocation_ey_row': None,
+        
+        # UI flags
+        'show_io_upload': False,
+        'show_venue_upload': False,
+        'show_ey_upload': False,
+        'creating_new_ref_IO': False,
+        'creating_new_ref_EY Personnel': False,
+        
+        # Current menu
+        'menu': 'dashboard'
+    }
     
-    # Configuration
-    if 'remuneration_rates' not in st.session_state:
-        st.session_state.remuneration_rates = DEFAULT_RATES.copy()
-    if 'exam_data' not in st.session_state:
-        st.session_state.exam_data = {}
-    if 'allocation_references' not in st.session_state:
-        st.session_state.allocation_references = {}
-    
-    # Current state
-    if 'current_exam_key' not in st.session_state:
-        st.session_state.current_exam_key = ""
-    if 'exam_name' not in st.session_state:
-        st.session_state.exam_name = ""
-    if 'exam_year' not in st.session_state:
-        st.session_state.exam_year = ""
-    if 'mock_test_mode' not in st.session_state:
-        st.session_state.mock_test_mode = False
-    if 'ey_allocation_mode' not in st.session_state:
-        st.session_state.ey_allocation_mode = False
-    
-    # UI state
-    if 'selected_venue' not in st.session_state:
-        st.session_state.selected_venue = ""
-    if 'selected_role' not in st.session_state:
-        st.session_state.selected_role = "Centre Coordinator"
-    if 'selected_dates' not in st.session_state:
-        st.session_state.selected_dates = []
-    if 'selected_io' not in st.session_state:
-        st.session_state.selected_io = ""
-    if 'selected_ey' not in st.session_state:
-        st.session_state.selected_ey = ""
-    
-    # Date selection state
-    if 'date_selection_state' not in st.session_state:
-        st.session_state.date_selection_state = {}
-    if 'expanded_dates' not in st.session_state:
-        st.session_state.expanded_dates = {}
-    
-    # File upload tracking
-    if 'io_master_loaded' not in st.session_state:
-        st.session_state.io_master_loaded = False
-    if 'venue_master_loaded' not in st.session_state:
-        st.session_state.venue_master_loaded = False
-    if 'ey_master_loaded' not in st.session_state:
-        st.session_state.ey_master_loaded = False
+    # Initialize all values
+    for key, default_value in default_values.items():
+        if key not in st.session_state:
+            st.session_state[key] = default_value
 
 # ============================================================================
 # DATA PERSISTENCE FUNCTIONS - FIXED
@@ -547,7 +547,7 @@ def get_or_create_reference(allocation_type):
         st.info(f"**Existing Reference:** Order No. {existing_ref.get('order_no', 'N/A')}, Page No. {existing_ref.get('page_no', 'N/A')}")
         
         # Check if we're creating new reference
-        if f"creating_new_ref_{allocation_type}" in st.session_state:
+        if f"creating_new_ref_{allocation_type}" in st.session_state and st.session_state[f"creating_new_ref_{allocation_type}"]:
             return create_reference_form(allocation_type)
         
         return None
@@ -556,48 +556,47 @@ def get_or_create_reference(allocation_type):
 
 def create_reference_form(allocation_type):
     """Create a form for entering reference details"""
-    with st.container():
-        st.markdown(f"### 📋 Enter Reference for {allocation_type}")
-        
-        order_no = st.text_input("Order No.:", key=f"order_no_{allocation_type}")
-        page_no = st.text_input("Page No.:", key=f"page_no_{allocation_type}")
-        remarks = st.text_area("Remarks (Optional):", key=f"remarks_{allocation_type}", height=100)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("💾 Save Reference", key=f"save_ref_{allocation_type}"):
-                if order_no and page_no:
-                    exam_key = st.session_state.current_exam_key
-                    if exam_key not in st.session_state.allocation_references:
-                        st.session_state.allocation_references[exam_key] = {}
-                    
-                    st.session_state.allocation_references[exam_key][allocation_type] = {
-                        'order_no': order_no,
-                        'page_no': page_no,
-                        'remarks': remarks,
-                        'timestamp': datetime.now().isoformat(),
-                        'allocation_type': allocation_type
-                    }
-                    
-                    save_all_data()
-                    st.success("✅ Reference saved successfully!")
-                    
-                    # Clear creating flag
-                    if f"creating_new_ref_{allocation_type}" in st.session_state:
-                        del st.session_state[f"creating_new_ref_{allocation_type}"]
-                    
-                    st.rerun()
-                    return st.session_state.allocation_references[exam_key][allocation_type]
-                else:
-                    st.error("Please enter both Order No. and Page No.")
-        
-        with col2:
-            if st.button("❌ Cancel", key=f"cancel_ref_{allocation_type}"):
+    st.markdown(f"### 📋 Enter Reference for {allocation_type}")
+    
+    order_no = st.text_input("Order No.:", key=f"order_no_{allocation_type}")
+    page_no = st.text_input("Page No.:", key=f"page_no_{allocation_type}")
+    remarks = st.text_area("Remarks (Optional):", key=f"remarks_{allocation_type}", height=100)
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("💾 Save Reference", key=f"save_ref_{allocation_type}"):
+            if order_no and page_no:
+                exam_key = st.session_state.current_exam_key
+                if exam_key not in st.session_state.allocation_references:
+                    st.session_state.allocation_references[exam_key] = {}
+                
+                st.session_state.allocation_references[exam_key][allocation_type] = {
+                    'order_no': order_no,
+                    'page_no': page_no,
+                    'remarks': remarks,
+                    'timestamp': datetime.now().isoformat(),
+                    'allocation_type': allocation_type
+                }
+                
+                save_all_data()
+                st.success("✅ Reference saved successfully!")
+                
                 # Clear creating flag
                 if f"creating_new_ref_{allocation_type}" in st.session_state:
-                    del st.session_state[f"creating_new_ref_{allocation_type}"]
+                    st.session_state[f"creating_new_ref_{allocation_type}"] = False
+                
                 st.rerun()
-                return None
+                return st.session_state.allocation_references[exam_key][allocation_type]
+            else:
+                st.error("Please enter both Order No. and Page No.")
+    
+    with col2:
+        if st.button("❌ Cancel", key=f"cancel_ref_{allocation_type}"):
+            # Clear creating flag
+            if f"creating_new_ref_{allocation_type}" in st.session_state:
+                st.session_state[f"creating_new_ref_{allocation_type}"] = False
+            st.rerun()
+            return None
     
     return None
 
@@ -1129,7 +1128,7 @@ def show_centre_coordinator():
                                                      help="Enable for mock test allocations")
     
     with col_mode2:
-        if st.checkbox("👁️ EY Personnel Mode", 
+        if st.checkbox("👁️ Switch to EY Personnel", 
                       value=st.session_state.ey_allocation_mode,
                       help="Switch to EY Personnel allocation"):
             st.session_state.ey_allocation_mode = True
@@ -1156,7 +1155,7 @@ def show_centre_coordinator():
             show_current_data_preview()
     
     # Show file uploaders if triggered
-    if 'show_io_upload' in st.session_state and st.session_state.show_io_upload:
+    if st.session_state.show_io_upload:
         uploaded_io = st.file_uploader("Upload Centre Coordinator Master (Excel)", 
                                       type=['xlsx', 'xls'],
                                       key="io_master_upload")
@@ -1173,11 +1172,11 @@ def show_centre_coordinator():
                 else:
                     st.session_state.io_master_loaded = True
                     st.success(f"✅ Loaded {len(st.session_state.io_df)} IO records")
-                    del st.session_state.show_io_upload
+                    st.session_state.show_io_upload = False
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
     
-    if 'show_venue_upload' in st.session_state and st.session_state.show_venue_upload:
+    if st.session_state.show_venue_upload:
         uploaded_venue = st.file_uploader("Upload Venue List (Excel)", 
                                          type=['xlsx', 'xls'],
                                          key="venue_upload")
@@ -1218,7 +1217,7 @@ def show_centre_coordinator():
                     
                     st.session_state.venue_master_loaded = True
                     st.success(f"✅ Loaded {len(st.session_state.venue_df)} venue records")
-                    del st.session_state.show_venue_upload
+                    st.session_state.show_venue_upload = False
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
                 st.error("Please ensure your Excel file has the correct format with VENUE, DATE, and SHIFT columns.")
@@ -1376,7 +1375,7 @@ def show_centre_coordinator():
                     # Allocation button
                     if st.session_state.selected_dates:
                         if st.button(f"✅ Allocate {name}", key=f"alloc_btn_{idx}"):
-                            # Get reference first
+                            # Set allocation state
                             st.session_state.current_allocation_person = name
                             st.session_state.current_allocation_area = area
                             st.session_state.current_allocation_role = role
@@ -1388,8 +1387,9 @@ def show_centre_coordinator():
         st.warning("No Centre Coordinators found matching the criteria")
     
     # Handle allocation after reference selection
-    if hasattr(st.session_state, 'current_allocation_person'):
+    if st.session_state.current_allocation_person and st.session_state.current_allocation_type == "IO":
         # Show reference selection
+        st.markdown(f"### 📋 Reference for {st.session_state.current_allocation_person}")
         ref_data = get_or_create_reference(st.session_state.current_allocation_role)
         
         if ref_data is not None:
@@ -1443,10 +1443,10 @@ def show_centre_coordinator():
             save_all_data()
             
             # Clear allocation state
-            del st.session_state.current_allocation_person
-            del st.session_state.current_allocation_area
-            del st.session_state.current_allocation_role
-            del st.session_state.current_allocation_type
+            st.session_state.current_allocation_person = None
+            st.session_state.current_allocation_area = None
+            st.session_state.current_allocation_role = None
+            st.session_state.current_allocation_type = None
             
             if allocation_count > 0:
                 success_msg = f"✅ Allocated {st.session_state.current_allocation_person} to {allocation_count} date-shift combination(s)"
@@ -1554,7 +1554,7 @@ def show_ey_personnel():
             st.success("Rate updated!")
     
     # Show EY uploader if triggered
-    if 'show_ey_upload' in st.session_state and st.session_state.show_ey_upload:
+    if st.session_state.show_ey_upload:
         uploaded_ey = st.file_uploader("Upload EY Personnel Master (Excel)", 
                                       type=['xlsx', 'xls'],
                                       key="ey_master_upload")
@@ -1574,7 +1574,7 @@ def show_ey_personnel():
                     
                     st.session_state.ey_master_loaded = True
                     st.success(f"✅ Loaded {len(st.session_state.ey_df)} EY personnel records")
-                    del st.session_state.show_ey_upload
+                    st.session_state.show_ey_upload = False
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
     
@@ -1702,8 +1702,9 @@ def show_ey_personnel():
         st.warning("No EY personnel found matching search criteria")
     
     # Handle EY allocation after reference selection
-    if hasattr(st.session_state, 'current_allocation_person') and st.session_state.current_allocation_type == "EY":
+    if st.session_state.current_allocation_person and st.session_state.current_allocation_type == "EY":
         # Show reference selection
+        st.markdown(f"### 📋 Reference for {st.session_state.current_allocation_person}")
         ref_data = get_or_create_reference("EY Personnel")
         
         if ref_data is not None:
@@ -1762,9 +1763,9 @@ def show_ey_personnel():
             save_all_data()
             
             # Clear allocation state
-            del st.session_state.current_allocation_person
-            del st.session_state.current_allocation_ey_row
-            del st.session_state.current_allocation_type
+            st.session_state.current_allocation_person = None
+            st.session_state.current_allocation_ey_row = None
+            st.session_state.current_allocation_type = None
             
             if allocation_count > 0:
                 success_msg = f"✅ Allocated {st.session_state.current_allocation_person} to {allocation_count} date-shift combinations"
@@ -3051,7 +3052,7 @@ def main():
             </style>
         """, unsafe_allow_html=True)
         
-        # Initialize session state
+        # Initialize session state (COMPLETELY)
         initialize_session_state()
         
         # Load existing data
