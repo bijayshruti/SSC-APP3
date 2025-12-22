@@ -3,6 +3,8 @@ STAFF SELECTION COMMISSION (ER), KOLKATA
 Centre Coordinator & Flying Squad Allocation System
 Streamlit Web Application
 Designed by Bijay Paswan
+
+ENHANCED VERSION WITH COMPREHENSIVE DATE SELECTION SYSTEM
 """
 
 import streamlit as st
@@ -58,17 +60,6 @@ DEFAULT_RATES = {
     'ey_personnel': 5000
 }
 
-# Default colors for UI
-COLORS = {
-    'primary': '#4169e1',
-    'danger': '#dc143c',
-    'success': '#3cb371',
-    'warning': '#ff8c00',
-    'info': '#20b2aa',
-    'dark': '#2c3e50',
-    'light': '#f8f9fa'
-}
-
 # ============================================================================
 # SESSION STATE MANAGEMENT - COMPLETE INITIALIZATION
 # ============================================================================
@@ -103,16 +94,23 @@ def initialize_session_state():
         'selected_io': "",
         'selected_ey': "",
         
-        # Date selection state
-        'date_selection_state': {},
-        'expanded_dates': {},
+        # Enhanced Date Selection System
+        'date_grid_state': {
+            'normal_dates': {},
+            'mock_dates': {},
+            'ey_dates': {},
+            'expanded_dates': {},
+            'select_all': False
+        },
+        'date_grid_mode': "IO",
+        'conflict_warning': None,
         
         # File upload tracking
         'io_master_loaded': False,
         'venue_master_loaded': False,
         'ey_master_loaded': False,
         
-        # Current allocation state (for reference handling)
+        # Current allocation state
         'current_allocation_person': None,
         'current_allocation_area': None,
         'current_allocation_role': None,
@@ -136,7 +134,7 @@ def initialize_session_state():
             st.session_state[key] = default_value
 
 # ============================================================================
-# DATA PERSISTENCE FUNCTIONS - FIXED
+# DATA PERSISTENCE FUNCTIONS
 # ============================================================================
 
 def load_all_data():
@@ -147,50 +145,41 @@ def load_all_data():
             with open(CONFIG_FILE, 'r') as f:
                 config = json.load(f)
                 st.session_state.remuneration_rates = config.get('remuneration_rates', DEFAULT_RATES.copy())
-                logging.info(f"Config loaded: {len(config)} items")
         
-        # Load exam data - handle both old and new formats
+        # Load exam data
         if DATA_FILE.exists():
             with open(DATA_FILE, 'r') as f:
                 exam_data = json.load(f)
-                # Convert loaded data to proper format
                 st.session_state.exam_data = {}
                 for exam_key, data in exam_data.items():
                     if isinstance(data, dict):
-                        # New format: {'io_allocations': [], 'ey_allocations': []}
                         st.session_state.exam_data[exam_key] = data
                     else:
-                        # Old format: direct list of allocations
                         st.session_state.exam_data[exam_key] = {
                             'io_allocations': data,
                             'ey_allocations': []
                         }
-                logging.info(f"Exam data loaded: {len(exam_data)} exams")
         
         # Load reference data
         if REFERENCE_FILE.exists():
             with open(REFERENCE_FILE, 'r') as f:
                 ref_data = json.load(f)
                 st.session_state.allocation_references = ref_data
-                logging.info(f"References loaded: {len(ref_data)} items")
         
         # Load deleted records
         if DELETED_RECORDS_FILE.exists():
             with open(DELETED_RECORDS_FILE, 'r') as f:
                 deleted_data = json.load(f)
                 st.session_state.deleted_records = deleted_data
-                logging.info(f"Deleted records loaded: {len(deleted_data)} items")
         
-        # Load current allocations from current exam
+        # Load current allocations
         if st.session_state.current_exam_key and st.session_state.current_exam_key in st.session_state.exam_data:
             exam_data = st.session_state.exam_data[st.session_state.current_exam_key]
             st.session_state.allocation = exam_data.get('io_allocations', [])
             st.session_state.ey_allocation = exam_data.get('ey_allocations', [])
-            logging.info(f"Current allocations loaded: {len(st.session_state.allocation)} IO, {len(st.session_state.ey_allocation)} EY")
         
         return True
     except Exception as e:
-        logging.error(f"Error loading data: {str(e)}")
         st.error(f"Error loading data: {str(e)}")
         return False
 
@@ -229,10 +218,8 @@ def save_all_data():
         with open(DELETED_RECORDS_FILE, 'w') as f:
             json.dump(st.session_state.deleted_records, f, indent=4, default=str)
         
-        logging.info("All data saved successfully")
         return True
     except Exception as e:
-        logging.error(f"Error saving data: {str(e)}")
         st.error(f"Error saving data: {str(e)}")
         return False
 
@@ -249,7 +236,6 @@ def create_backup(description=""):
             backup_name += f"_{description.replace(' ', '_')}"
         backup_file = BACKUP_DIR / f"{backup_name}.json"
         
-        # Get current data
         backup_data = {
             'timestamp': datetime.now().isoformat(),
             'description': description,
@@ -263,10 +249,8 @@ def create_backup(description=""):
         with open(backup_file, 'w') as f:
             json.dump(backup_data, f, indent=4, default=str)
         
-        logging.info(f"Backup created: {backup_file.name}")
         return backup_file
     except Exception as e:
-        logging.error(f"Error creating backup: {str(e)}")
         return None
 
 def restore_from_backup(backup_file):
@@ -295,10 +279,8 @@ def restore_from_backup(backup_file):
         # Save restored data
         save_all_data()
         
-        logging.info(f"Data restored from backup: {backup_file.name}")
         return True
     except Exception as e:
-        logging.error(f"Error restoring from backup: {str(e)}")
         return False
 
 # ============================================================================
@@ -347,20 +329,14 @@ def load_default_master_data():
     st.session_state.io_df = pd.DataFrame(default_io_data)
     st.session_state.io_master_loaded = True
     
-    # Default venue data
-    venues = [
-        'Kolkata Main Centre', 'Howrah Centre', 'Hooghly Centre',
-        'Nadia Centre', 'North 24 Parganas Centre', 'South 24 Parganas Centre',
-        'Bardhaman Centre', 'Birbhum Centre', 'Bankura Centre', 'Purulia Centre'
-    ]
-    
+    # Default venue data with dates for testing
+    venues = ['Kolkata Main Centre', 'Howrah Centre', 'Hooghly Centre']
     venue_data = []
-    start_date = datetime.now().date()
     
     for venue_idx, venue_name in enumerate(venues):
         centre_code = f'100{venue_idx + 1}'
         for day_offset in range(5):  # 5 days
-            date = start_date + timedelta(days=day_offset)
+            date = datetime.now().date() + timedelta(days=day_offset)
             date_str = date.strftime("%d-%m-%Y")
             for shift in ['Morning', 'Afternoon', 'Evening']:
                 venue_data.append({
@@ -382,35 +358,28 @@ def load_default_master_data():
     default_ey_data = {
         'NAME': [
             'Dr. Amit Sharma', 'Prof. Priya Gupta', 'Ms. Anjali Chatterjee',
-            'Mr. Rajesh Banerjee', 'Dr. Sunita Das', 'Prof. Ravi Kumar',
-            'Ms. Meera Sen', 'Mr. Arjun Roy', 'Dr. Neha Verma',
-            'Prof. Sanjay Mishra'
+            'Mr. Rajesh Banerjee', 'Dr. Sunita Das', 'Prof. Ravi Kumar'
         ],
         'MOBILE': [
             '9876543201', '9876543202', '9876543203', '9876543204', '9876543205',
-            '9876543206', '9876543207', '9876543208', '9876543209', '9876543210'
+            '9876543206'
         ],
         'EMAIL': [
             'sharma@example.com', 'gupta@example.com', 'chatterjee@example.com',
-            'banerjee@example.com', 'das@example.com', 'kumar@example.com',
-            'sen@example.com', 'roy@example.com', 'verma@example.com', 'mishra@example.com'
+            'banerjee@example.com', 'das@example.com', 'kumar@example.com'
         ],
-        'ID_NUMBER': [f'EY00{i+1}' for i in range(10)],
+        'ID_NUMBER': [f'EY00{i+1}' for i in range(6)],
         'DESIGNATION': [
             'Professor', 'Associate Professor', 'Assistant Professor',
-            'Lecturer', 'Professor', 'Associate Professor',
-            'Assistant Professor', 'Lecturer', 'Professor', 'Associate Professor'
+            'Lecturer', 'Professor', 'Associate Professor'
         ],
         'DEPARTMENT': [
             'Mathematics', 'Physics', 'Chemistry', 'English',
-            'History', 'Computer Science', 'Economics', 'Political Science',
-            'Biology', 'Statistics'
+            'History', 'Computer Science'
         ],
         'UNIVERSITY': [
             'University of Calcutta', 'Jadavpur University', 'Presidency University',
-            'University of Calcutta', 'Jadavpur University', 'Presidency University',
-            'University of Calcutta', 'Jadavpur University', 'Presidency University',
-            'University of Calcutta'
+            'University of Calcutta', 'Jadavpur University', 'Presidency University'
         ]
     }
     
@@ -419,43 +388,569 @@ def load_default_master_data():
     
     st.success("Default master data loaded successfully!")
 
-def get_file_download_link(df, filename, filetype='csv'):
-    """Generate a download link for a dataframe"""
-    if filetype == 'csv':
-        data = df.to_csv(index=False)
-        mime_type = 'text/csv'
-        extension = 'csv'
-    elif filetype == 'excel':
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            df.to_excel(writer, index=False, sheet_name='Data')
-        data = output.getvalue()
-        mime_type = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-        extension = 'xlsx'
-    else:
-        return None
-    
-    b64 = base64.b64encode(data).decode()
-    href = f'<a href="data:{mime_type};base64,{b64}" download="{filename}.{extension}">Download {filename}</a>'
-    return href
+# ============================================================================
+# ENHANCED DATE SELECTION SYSTEM
+# ============================================================================
 
-def check_allocation_conflict(person_name, date, shift, venue, role, allocation_type):
-    """Check for allocation conflicts"""
+def create_enhanced_date_selection_grid(allocation_type="IO"):
+    """
+    Create enhanced date selection grid with three modes:
+    1. Normal Exam Mode (IO/Flying Squad)
+    2. Mock Test Mode
+    3. EY Personnel Mode
+    """
+    
+    # Initialize selection state
+    if 'date_grid_state' not in st.session_state:
+        st.session_state.date_grid_state = {
+            'normal_dates': {},
+            'mock_dates': {},
+            'ey_dates': {},
+            'expanded_dates': {},
+            'select_all': False
+        }
+    
+    st.session_state.date_grid_mode = allocation_type
+    
+    # Create main container
+    st.markdown("### 📅 Date & Shift Selection")
+    
+    # Mode selection (only show for IO mode)
     if allocation_type == "IO":
-        # Check for exact duplicate
+        col_mode1, col_mode2 = st.columns([2, 1])
+        with col_mode1:
+            mode = st.radio(
+                "Selection Mode:",
+                ["Normal Exam Dates", "Mock Test Dates"],
+                horizontal=True,
+                key="date_selection_mode"
+            )
+            st.session_state.mock_test_mode = (mode == "Mock Test Dates")
+        
+        with col_mode2:
+            if st.button("🔁 Switch to EY Mode", use_container_width=True):
+                st.session_state.ey_allocation_mode = True
+                st.session_state.menu = "ey"
+                st.rerun()
+    else:
+        # EY Mode
+        st.session_state.mock_test_mode = False
+        mode = "Normal Exam Dates"
+    
+    # ============================================
+    # 1. NORMAL EXAM MODE (Centre Coordinators/Flying Squad)
+    # ============================================
+    if not st.session_state.mock_test_mode:
+        
+        # Venue selection for Normal Mode
+        if allocation_type == "IO":
+            venues = sorted(st.session_state.venue_df['VENUE'].dropna().unique())
+            if not venues:
+                st.warning("No venues available. Please load venue data.")
+                return []
+            
+            selected_venue = st.selectbox(
+                "Select Venue:", 
+                venues,
+                key=f"venue_select_{allocation_type}",
+                index=0
+            )
+            
+            if selected_venue != st.session_state.selected_venue:
+                st.session_state.selected_venue = selected_venue
+                st.rerun()
+            
+            # Get venue data
+            venue_data = st.session_state.venue_df[
+                st.session_state.venue_df['VENUE'] == selected_venue
+            ]
+            selected_venues = [selected_venue]
+        else:
+            # EY Mode - multi-venue selection
+            st.markdown("#### 🏢 Venue Selection")
+            
+            venues = sorted(st.session_state.venue_df['VENUE'].dropna().unique())
+            if not venues:
+                st.warning("No venues available. Please load venue data.")
+                return []
+            
+            selected_venues = st.multiselect(
+                "Select Venues (multiple allowed):",
+                venues,
+                default=[],
+                key="ey_venue_select"
+            )
+            
+            col_ey1, col_ey2 = st.columns(2)
+            with col_ey1:
+                if st.button("🎯 Select All Venues", use_container_width=True):
+                    selected_venues = venues
+                    st.rerun()
+            
+            with col_ey2:
+                if st.button("🗑️ Clear All", type="secondary", use_container_width=True):
+                    selected_venues = []
+                    st.rerun()
+            
+            if not selected_venues:
+                st.info("Select at least one venue to continue")
+                return []
+            
+            # For EY mode, use first selected venue for date display
+            selected_venue = selected_venues[0]
+            venue_data = st.session_state.venue_df[
+                st.session_state.venue_df['VENUE'] == selected_venue
+            ]
+        
+        if venue_data.empty:
+            st.warning(f"No data found for venue: {selected_venue}")
+            return []
+        
+        # Get unique dates for selected venue
+        unique_dates = sorted(venue_data['DATE'].dropna().unique())
+        
+        if not unique_dates:
+            st.warning(f"No dates available for {selected_venue}")
+            return []
+        
+        # Initialize date state if not exists
+        venue_key = f"{st.session_state.current_exam_key}_{selected_venue}"
+        if venue_key not in st.session_state.date_grid_state['normal_dates']:
+            st.session_state.date_grid_state['normal_dates'][venue_key] = {}
+        
+        if venue_key not in st.session_state.date_grid_state['expanded_dates']:
+            st.session_state.date_grid_state['expanded_dates'][venue_key] = {}
+        
+        # "Select All" checkbox
+        all_dates_selected = True
+        all_dates_partial = False
+        
+        # Check current selection status
+        for date_str in unique_dates:
+            date_key = f"{venue_key}_{date_str}"
+            if date_key in st.session_state.date_grid_state['normal_dates'][venue_key]:
+                date_state = st.session_state.date_grid_state['normal_dates'][venue_key][date_key]
+                if not date_state.get('all_selected', False):
+                    all_dates_selected = False
+                    if any(date_state.get('shifts', {}).values()):
+                        all_dates_partial = True
+            else:
+                all_dates_selected = False
+        
+        col_all, _ = st.columns([1, 3])
+        with col_all:
+            select_all = st.checkbox(
+                "✓ Select All Dates/Shifts",
+                value=all_dates_selected,
+                key=f"select_all_{venue_key}"
+            )
+            
+            if select_all != st.session_state.date_grid_state['select_all']:
+                st.session_state.date_grid_state['select_all'] = select_all
+                if select_all:
+                    # Select all shifts for all dates
+                    for date_str in unique_dates:
+                        date_key = f"{venue_key}_{date_str}"
+                        date_shifts = venue_data[venue_data['DATE'] == date_str]['SHIFT'].unique()
+                        date_shifts = [str(s) for s in date_shifts if pd.notna(s) and str(s) != '']
+                        
+                        if date_key not in st.session_state.date_grid_state['normal_dates'][venue_key]:
+                            st.session_state.date_grid_state['normal_dates'][venue_key][date_key] = {
+                                'all_selected': False,
+                                'shifts': {}
+                            }
+                        
+                        for shift in date_shifts:
+                            st.session_state.date_grid_state['normal_dates'][venue_key][date_key]['shifts'][shift] = True
+                        st.session_state.date_grid_state['normal_dates'][venue_key][date_key]['all_selected'] = True
+                else:
+                    # Deselect all
+                    for date_str in unique_dates:
+                        date_key = f"{venue_key}_{date_str}"
+                        if date_key in st.session_state.date_grid_state['normal_dates'][venue_key]:
+                            for shift in st.session_state.date_grid_state['normal_dates'][venue_key][date_key]['shifts']:
+                                st.session_state.date_grid_state['normal_dates'][venue_key][date_key]['shifts'][shift] = False
+                            st.session_state.date_grid_state['normal_dates'][venue_key][date_key]['all_selected'] = False
+                st.rerun()
+        
+        # Display dates in grid layout
+        st.markdown(f"**Available dates for {selected_venue}:**")
+        
+        # Calculate number of columns based on date count
+        num_dates = len(unique_dates)
+        cols_per_row = 3 if num_dates > 6 else (4 if num_dates > 4 else min(4, num_dates))
+        
+        # Group dates into rows
+        date_rows = [unique_dates[i:i + cols_per_row] for i in range(0, num_dates, cols_per_row)]
+        
+        for row_dates in date_rows:
+            cols = st.columns(cols_per_row)
+            for idx, date_str in enumerate(row_dates):
+                with cols[idx]:
+                    display_date_card(date_str, venue_data, venue_key, allocation_type)
+        
+        # Get selected date-shift combinations
+        selected_date_shifts = get_selected_date_shifts(venue_key, unique_dates, venue_data, allocation_type, selected_venues)
+        
+        return selected_date_shifts
+    
+    # ============================================
+    # 2. MOCK TEST MODE
+    # ============================================
+    else:
+        st.markdown("#### 🎭 Mock Test Date Entry")
+        
+        col_mock1, col_mock2 = st.columns(2)
+        with col_mock1:
+            mock_date = st.date_input(
+                "Mock Test Date:",
+                value=datetime.now().date(),
+                key="mock_date_input"
+            )
+        
+        with col_mock2:
+            mock_shift = st.selectbox(
+                "Shift:",
+                ["Morning", "Afternoon", "Evening"],
+                key="mock_shift_select"
+            )
+        
+        col_add, _ = st.columns([1, 3])
+        with col_add:
+            if st.button("➕ Add Mock Test Date", use_container_width=True):
+                date_str = mock_date.strftime("%d-%m-%Y")
+                venue_key = f"mock_{st.session_state.selected_venue}"
+                
+                if venue_key not in st.session_state.date_grid_state['mock_dates']:
+                    st.session_state.date_grid_state['mock_dates'][venue_key] = {}
+                
+                date_key = f"{venue_key}_{date_str}"
+                if date_key not in st.session_state.date_grid_state['mock_dates'][venue_key]:
+                    st.session_state.date_grid_state['mock_dates'][venue_key][date_key] = {
+                        'shifts': {},
+                        'all_selected': False
+                    }
+                
+                # Add shift
+                st.session_state.date_grid_state['mock_dates'][venue_key][date_key]['shifts'][mock_shift] = True
+                st.rerun()
+        
+        # Display mock dates
+        venue_key = f"mock_{st.session_state.selected_venue}"
+        if venue_key in st.session_state.date_grid_state['mock_dates']:
+            mock_dates = list(st.session_state.date_grid_state['mock_dates'][venue_key].keys())
+            mock_dates = [d.replace(f"{venue_key}_", "") for d in mock_dates]
+            mock_dates = sorted(set(mock_dates))
+            
+            if mock_dates:
+                st.markdown("#### Mock Test Dates Added:")
+                
+                # Display in grid
+                cols_per_row = 3
+                mock_rows = [mock_dates[i:i + cols_per_row] for i in range(0, len(mock_dates), cols_per_row)]
+                
+                for row_dates in mock_rows:
+                    cols = st.columns(cols_per_row)
+                    for idx, date_str in enumerate(row_dates):
+                        with cols[idx]:
+                            display_mock_date_card(date_str, venue_key)
+                
+                # Get selected mock date-shifts
+                selected_date_shifts = get_selected_mock_date_shifts(venue_key)
+                return selected_date_shifts
+        
+        st.info("Add mock test dates using the form above")
+        return []
+
+def display_date_card(date_str, venue_data, venue_key, allocation_type="IO"):
+    """Display a date card in the grid"""
+    
+    # Get shifts for this date
+    date_shifts_data = venue_data[venue_data['DATE'] == date_str]
+    date_shifts = date_shifts_data['SHIFT'].unique()
+    date_shifts = [str(shift) for shift in date_shifts if pd.notna(shift) and str(shift) != '']
+    
+    if not date_shifts:
+        return
+    
+    # Initialize date state if not exists
+    date_key = f"{venue_key}_{date_str}"
+    if date_key not in st.session_state.date_grid_state['normal_dates'][venue_key]:
+        st.session_state.date_grid_state['normal_dates'][venue_key][date_key] = {
+            'all_selected': False,
+            'shifts': {shift: False for shift in date_shifts}
+        }
+    
+    # Get current state
+    date_state = st.session_state.date_grid_state['normal_dates'][venue_key][date_key]
+    
+    # Calculate selection status
+    selected_shifts = [shift for shift, selected in date_state['shifts'].items() if selected]
+    all_selected = len(selected_shifts) == len(date_shifts)
+    partially_selected = len(selected_shifts) > 0 and not all_selected
+    none_selected = len(selected_shifts) == 0
+    
+    # Determine color based on selection
+    if all_selected:
+        bg_color = "#4CAF50"  # Green
+        border_color = "#388E3C"
+        status_text = "✓ All"
+        emoji = "🟢"
+    elif partially_selected:
+        bg_color = "#FF9800"  # Orange
+        border_color = "#F57C00"
+        status_text = f"✓ {len(selected_shifts)}/{len(date_shifts)}"
+        emoji = "🟠"
+    else:
+        bg_color = "#FFEB3B"  # Yellow
+        border_color = "#FBC02D"
+        status_text = f"{len(date_shifts)} shifts"
+        emoji = "🟡"
+    
+    # Create clickable date card
+    card_html = f"""
+        <div style="
+            background-color: {bg_color};
+            color: #333;
+            padding: 12px;
+            border-radius: 8px;
+            border: 2px solid {border_color};
+            margin: 5px 0;
+            cursor: pointer;
+            text-align: center;
+            font-weight: bold;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+        ">
+            <div style='font-size: 16px;'>{emoji} <strong>{date_str}</strong></div>
+            <div style='font-size: 12px; margin-top: 5px;'>{status_text}</div>
+        </div>
+    """
+    
+    # Display card
+    st.markdown(card_html, unsafe_allow_html=True)
+    
+    # Handle click events
+    col_click1, col_click2 = st.columns([1, 1])
+    
+    with col_click1:
+        # Single click - toggle all shifts
+        if st.button("📅 Toggle", key=f"toggle_{date_key}", use_container_width=True):
+            if all_selected:
+                # Deselect all
+                for shift in date_shifts:
+                    date_state['shifts'][shift] = False
+                date_state['all_selected'] = False
+            else:
+                # Select all
+                for shift in date_shifts:
+                    date_state['shifts'][shift] = True
+                date_state['all_selected'] = True
+            st.rerun()
+    
+    with col_click2:
+        # Double click - expand/collapse
+        is_expanded = st.session_state.date_grid_state['expanded_dates'][venue_key].get(date_str, False)
+        expand_label = "📖 Details" if not is_expanded else "📕 Hide"
+        
+        if st.button(expand_label, key=f"expand_{date_key}", use_container_width=True):
+            st.session_state.date_grid_state['expanded_dates'][venue_key][date_str] = not is_expanded
+            st.rerun()
+    
+    # Show shift selection if expanded
+    if st.session_state.date_grid_state['expanded_dates'][venue_key].get(date_str, False):
+        st.markdown("**Select Shifts:**")
+        
+        # Create columns for shifts
+        shift_cols = st.columns(min(3, len(date_shifts)))
+        
+        for idx, shift in enumerate(sorted(date_shifts)):
+            col_idx = idx % len(shift_cols)
+            with shift_cols[col_idx]:
+                shift_selected = st.checkbox(
+                    f"⏰ {shift}",
+                    value=date_state['shifts'][shift],
+                    key=f"shift_{date_key}_{shift}"
+                )
+                if shift_selected != date_state['shifts'][shift]:
+                    date_state['shifts'][shift] = shift_selected
+                    # Update all_selected status
+                    selected_now = [s for s, sel in date_state['shifts'].items() if sel]
+                    date_state['all_selected'] = (len(selected_now) == len(date_shifts))
+                    st.rerun()
+        
+        st.markdown("---")
+
+def display_mock_date_card(date_str, venue_key):
+    """Display a mock test date card in the grid"""
+    
+    date_key = f"{venue_key}_{date_str}"
+    date_state = st.session_state.date_grid_state['mock_dates'][venue_key][date_key]
+    
+    # Get shifts
+    date_shifts = list(date_state['shifts'].keys())
+    selected_shifts = [shift for shift, selected in date_state['shifts'].items() if selected]
+    
+    all_selected = len(selected_shifts) == len(date_shifts)
+    partially_selected = len(selected_shifts) > 0 and not all_selected
+    
+    # Determine color
+    if all_selected:
+        bg_color = "#2196F3"  # Blue for mock tests
+        border_color = "#1976D2"
+        status_text = "✓ All Mock"
+        emoji = "🔵"
+    elif partially_selected:
+        bg_color = "#03A9F4"  # Light blue
+        border_color = "#0288D1"
+        status_text = f"✓ {len(selected_shifts)}/{len(date_shifts)}"
+        emoji = "🔷"
+    else:
+        bg_color = "#B3E5FC"  # Very light blue
+        border_color = "#81D4FA"
+        status_text = f"{len(date_shifts)} mock"
+        emoji = "◻️"
+    
+    # Create card
+    card_html = f"""
+        <div style="
+            background-color: {bg_color};
+            color: #333;
+            padding: 12px;
+            border-radius: 8px;
+            border: 2px solid {border_color};
+            margin: 5px 0;
+            cursor: pointer;
+            text-align: center;
+            font-weight: bold;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        ">
+            <div style='font-size: 16px;'>{emoji} <strong>{date_str}</strong></div>
+            <div style='font-size: 12px; margin-top: 5px;'>{status_text} <small>(Mock)</small></div>
+        </div>
+    """
+    
+    st.markdown(card_html, unsafe_allow_html=True)
+    
+    # Control buttons
+    col1, col2, col3 = st.columns([1, 1, 1])
+    
+    with col1:
+        if st.button("📅 Toggle", key=f"mock_toggle_{date_key}", use_container_width=True):
+            if all_selected:
+                # Deselect all
+                for shift in date_shifts:
+                    date_state['shifts'][shift] = False
+            else:
+                # Select all
+                for shift in date_shifts:
+                    date_state['shifts'][shift] = True
+            st.rerun()
+    
+    with col2:
+        if st.button("🗑️ Remove", key=f"mock_remove_{date_key}", type="secondary", use_container_width=True):
+            del st.session_state.date_grid_state['mock_dates'][venue_key][date_key]
+            st.rerun()
+    
+    with col3:
+        # Show shift checkboxes inline
+        shift_list = ", ".join([f"⏰{s}" if date_state['shifts'][s] else s for s in sorted(date_shifts)])
+        st.caption(shift_list)
+
+def get_selected_date_shifts(venue_key, unique_dates, venue_data, allocation_type="IO", selected_venues=None):
+    """Get selected date-shift combinations for normal mode"""
+    
+    selected_date_shifts = []
+    
+    if selected_venues is None:
+        selected_venues = [st.session_state.selected_venue]
+    
+    for date_str in unique_dates:
+        date_key = f"{venue_key}_{date_str}"
+        
+        if (venue_key in st.session_state.date_grid_state['normal_dates'] and 
+            date_key in st.session_state.date_grid_state['normal_dates'][venue_key]):
+            
+            date_state = st.session_state.date_grid_state['normal_dates'][venue_key][date_key]
+            
+            for shift, selected in date_state['shifts'].items():
+                if selected:
+                    # For EY mode: assign to ALL selected venues
+                    if allocation_type == "EY":
+                        for venue in selected_venues:
+                            selected_date_shifts.append({
+                                'venue': venue,
+                                'date': date_str,
+                                'shift': shift,
+                                'is_mock': False,
+                                'allocation_type': allocation_type
+                            })
+                    else:
+                        # For IO mode: assign to single venue
+                        selected_date_shifts.append({
+                            'venue': st.session_state.selected_venue,
+                            'date': date_str,
+                            'shift': shift,
+                            'is_mock': False,
+                            'allocation_type': allocation_type
+                        })
+    
+    return selected_date_shifts
+
+def get_selected_mock_date_shifts(venue_key):
+    """Get selected date-shift combinations for mock mode"""
+    
+    selected_date_shifts = []
+    
+    if venue_key in st.session_state.date_grid_state['mock_dates']:
+        for date_key, date_state in st.session_state.date_grid_state['mock_dates'][venue_key].items():
+            date_str = date_key.replace(f"{venue_key}_", "")
+            
+            for shift, selected in date_state['shifts'].items():
+                if selected:
+                    selected_date_shifts.append({
+                        'venue': st.session_state.selected_venue,
+                        'date': date_str,
+                        'shift': shift,
+                        'is_mock': True,
+                        'allocation_type': "IO"
+                    })
+    
+    return selected_date_shifts
+
+# ============================================================================
+# CONFLICT CHECKING SYSTEM
+# ============================================================================
+
+def check_allocation_conflict_enhanced(person_name, date_info, role, allocation_type):
+    """
+    Enhanced conflict checking with detailed messages
+    """
+    
+    venue = date_info['venue']
+    date = date_info['date']
+    shift = date_info['shift']
+    is_mock = date_info.get('is_mock', False)
+    
+    if allocation_type == "IO":
+        allocations = st.session_state.allocation
+        
+        # 1. Check for exact duplicate
         duplicate = any(
             alloc['IO Name'] == person_name and 
             alloc['Date'] == date and 
             alloc['Shift'] == shift and 
             alloc['Venue'] == venue and 
-            alloc['Role'] == role
-            for alloc in st.session_state.allocation
+            alloc['Role'] == role and
+            alloc.get('Mock Test', False) == is_mock
+            for alloc in allocations
+            if alloc.get('Exam') == st.session_state.current_exam_key
         )
         
         if duplicate:
-            return True, f"Duplicate allocation found! {person_name} is already allocated to {venue} on {date} ({shift}) as {role}."
+            return True, f"❌ Duplicate allocation! {person_name} is already allocated to {venue} on {date} ({shift}) as {role}."
         
-        # For Centre Coordinator: Cannot be at multiple venues same date/shift
+        # 2. For Centre Coordinator: Cannot be at multiple venues same date/shift
         if role == "Centre Coordinator":
             conflict = any(
                 alloc['IO Name'] == person_name and 
@@ -463,65 +958,119 @@ def check_allocation_conflict(person_name, date, shift, venue, role, allocation_
                 alloc['Shift'] == shift and 
                 alloc['Venue'] != venue and
                 alloc['Role'] == "Centre Coordinator"
-                for alloc in st.session_state.allocation
+                for alloc in allocations
+                if alloc.get('Exam') == st.session_state.current_exam_key
             )
+            
             if conflict:
                 existing_venue = next(
-                    alloc['Venue'] for alloc in st.session_state.allocation 
+                    alloc['Venue'] for alloc in allocations 
                     if alloc['IO Name'] == person_name and 
                        alloc['Date'] == date and 
                        alloc['Shift'] == shift and
-                       alloc['Role'] == "Centre Coordinator"
+                       alloc['Role'] == "Centre Coordinator" and
+                       alloc.get('Exam') == st.session_state.current_exam_key
                 )
-                return True, f"Centre Coordinator conflict! {person_name} is already allocated to {existing_venue} on {date} ({shift})."
+                return True, f"❌ Centre Coordinator conflict! {person_name} is already allocated to {existing_venue} on {date} ({shift})."
         
-        # For Flying Squad: Allow multiple venues but warn
+        # 3. For Flying Squad: Allow multiple venues but warn
         elif role == "Flying Squad":
             existing_venues = [
-                alloc['Venue'] for alloc in st.session_state.allocation 
+                alloc['Venue'] for alloc in allocations 
                 if alloc['IO Name'] == person_name and 
                    alloc['Date'] == date and 
                    alloc['Shift'] == shift and
-                   alloc['Role'] == "Flying Squad"
+                   alloc['Role'] == "Flying Squad" and
+                   alloc.get('Exam') == st.session_state.current_exam_key
             ]
+            
             if existing_venues:
-                return False, f"Warning: {person_name} is already allocated to {', '.join(existing_venues)} on {date} ({shift}). Do you want to assign to additional venue {venue}?"
+                if venue in existing_venues:
+                    return False, ""  # Same venue, handled by duplicate check
+                
+                # Check if this would exceed reasonable limits
+                if len(existing_venues) >= 3:
+                    return True, f"❌ Too many venues! {person_name} is already assigned to {len(existing_venues)} venues on {date} ({shift}). Maximum 3 venues allowed."
+                
+                return False, f"⚠️ Warning: {person_name} is already allocated to {', '.join(existing_venues)} on {date} ({shift}). Do you want to assign to additional venue {venue}?"
     
     elif allocation_type == "EY":
-        # Check for exact duplicate
+        allocations = st.session_state.ey_allocation
+        
+        # 1. Check for exact duplicate
         duplicate = any(
             alloc['EY Personnel'] == person_name and 
             alloc['Date'] == date and 
             alloc['Shift'] == shift and 
             alloc['Venue'] == venue
-            for alloc in st.session_state.ey_allocation
+            for alloc in allocations
+            if alloc.get('Exam') == st.session_state.current_exam_key
         )
         
         if duplicate:
-            return True, f"Duplicate EY allocation found! {person_name} is already allocated to {venue} on {date} ({shift})."
+            return True, f"❌ Duplicate EY allocation! {person_name} is already allocated to {venue} on {date} ({shift})."
         
-        # EY Personnel: Cannot be at multiple venues same date/shift
+        # 2. EY Personnel: Cannot be at multiple venues same date/shift
         conflict = any(
             alloc['EY Personnel'] == person_name and 
             alloc['Date'] == date and 
             alloc['Shift'] == shift and 
             alloc['Venue'] != venue
-            for alloc in st.session_state.ey_allocation
+            for alloc in allocations
+            if alloc.get('Exam') == st.session_state.current_exam_key
         )
         
         if conflict:
             existing_venue = next(
-                alloc['Venue'] for alloc in st.session_state.ey_allocation 
+                alloc['Venue'] for alloc in allocations 
                 if alloc['EY Personnel'] == person_name and 
                    alloc['Date'] == date and 
-                   alloc['Shift'] == shift
+                   alloc['Shift'] == shift and
+                   alloc.get('Exam') == st.session_state.current_exam_key
             )
-            return True, f"EY Personnel conflict! {person_name} is already allocated to {existing_venue} on {date} ({shift})."
+            return True, f"❌ EY Personnel conflict! {person_name} is already allocated to {existing_venue} on {date} ({shift})."
+        
+        # 3. Check for excessive assignments
+        same_day_assignments = [
+            alloc for alloc in allocations
+            if alloc['EY Personnel'] == person_name and 
+               alloc['Date'] == date and
+               alloc.get('Exam') == st.session_state.current_exam_key
+        ]
+        
+        if len(same_day_assignments) >= 4:
+            return True, f"❌ Excessive workload! {person_name} already has {len(same_day_assignments)} shifts on {date}. Maximum 4 shifts allowed per day."
     
     return False, ""
 
+def handle_conflict_warning(warning_message, date_info):
+    """Handle conflict warnings with user confirmation"""
+    
+    # Store warning in session state
+    st.session_state.conflict_warning = {
+        'message': warning_message,
+        'date_info': date_info,
+        'confirmed': False
+    }
+    
+    # Show warning dialog
+    st.warning(warning_message)
+    
+    col_warn1, col_warn2 = st.columns(2)
+    with col_warn1:
+        if st.button("✅ Proceed Anyway", type="primary"):
+            st.session_state.conflict_warning['confirmed'] = True
+            st.rerun()
+    
+    with col_warn2:
+        if st.button("❌ Cancel", type="secondary"):
+            st.session_state.conflict_warning = None
+            st.rerun()
+    
+    return False
+
 # ============================================================================
-# REFERENCE MANAGEMENT - FIXED
+# REFERENCE MANAGEMENT
 # ============================================================================
 
 def get_or_create_reference(allocation_type):
@@ -540,7 +1089,6 @@ def get_or_create_reference(allocation_type):
     if role_key in st.session_state.allocation_references[exam_key]:
         existing_ref = st.session_state.allocation_references[exam_key][role_key]
         
-        # Create columns for choice
         col1, col2 = st.columns(2)
         
         with col1:
@@ -555,7 +1103,6 @@ def get_or_create_reference(allocation_type):
         # Display existing reference info
         st.info(f"**Existing Reference:** Order No. {existing_ref.get('order_no', 'N/A')}, Page No. {existing_ref.get('page_no', 'N/A')}")
         
-        # Check if we're creating new reference
         if f"creating_new_ref_{allocation_type}" in st.session_state and st.session_state[f"creating_new_ref_{allocation_type}"]:
             return create_reference_form(allocation_type)
         
@@ -590,7 +1137,6 @@ def create_reference_form(allocation_type):
                 save_all_data()
                 st.success("✅ Reference saved successfully!")
                 
-                # Clear creating flag
                 if f"creating_new_ref_{allocation_type}" in st.session_state:
                     st.session_state[f"creating_new_ref_{allocation_type}"] = False
                 
@@ -601,7 +1147,6 @@ def create_reference_form(allocation_type):
     
     with col2:
         if st.button("❌ Cancel", key=f"cancel_ref_{allocation_type}"):
-            # Clear creating flag
             if f"creating_new_ref_{allocation_type}" in st.session_state:
                 st.session_state[f"creating_new_ref_{allocation_type}"] = False
             st.rerun()
@@ -610,972 +1155,89 @@ def create_reference_form(allocation_type):
     return None
 
 # ============================================================================
-# REPORT GENERATION MODULE
+# ALLOCATION FUNCTIONS
 # ============================================================================
 
-def export_to_excel():
-    """Generate comprehensive allocation report with all sheets"""
-    if not st.session_state.allocation and not st.session_state.ey_allocation:
-        st.warning("No allocation data available")
-        return None
+def perform_allocation_with_conflict_check(person_name, selected_date_shifts, role, allocation_type, ref_data):
+    """Perform allocation with comprehensive conflict checking"""
     
-    try:
-        # Create Excel writer
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            
-            # Get current exam data
-            io_allocations = st.session_state.allocation
-            ey_allocations = st.session_state.ey_allocation
-            
-            # Convert to DataFrames
-            io_df = pd.DataFrame(io_allocations)
-            ey_df = pd.DataFrame(ey_allocations)
-            
-            # ============================================
-            # A. IO ALLOCATIONS SHEET
-            # ============================================
-            if not io_df.empty:
-                # Merge with IO master data
-                if not st.session_state.io_df.empty:
-                    io_master = st.session_state.io_df.copy()
-                    # Ensure NAME column exists in both
-                    if 'NAME' in io_master.columns and 'IO Name' in io_df.columns:
-                        # Standardize column names for merge
-                        io_master.rename(columns={'NAME': 'IO Name'}, inplace=True)
-                        io_merged = pd.merge(io_df, io_master, on='IO Name', how='left', suffixes=('', '_master'))
-                    else:
-                        io_merged = io_df.copy()
-                else:
-                    io_merged = io_df.copy()
-                
-                # Merge with Venue master data
-                if not st.session_state.venue_df.empty:
-                    venue_master = st.session_state.venue_df.copy()
-                    # Standardize column names
-                    venue_master.rename(columns={'VENUE': 'Venue', 'DATE': 'Date', 'SHIFT': 'Shift'}, inplace=True)
-                    
-                    # Create a unique key for merging
-                    io_merged['merge_key'] = io_merged['Venue'] + '|' + io_merged['Date'] + '|' + io_merged['Shift']
-                    venue_master['merge_key'] = venue_master['Venue'] + '|' + venue_master['Date'] + '|' + venue_master['Shift']
-                    
-                    io_merged = pd.merge(io_merged, venue_master, on='merge_key', how='left', suffixes=('', '_venue'))
-                    io_merged.drop('merge_key', axis=1, inplace=True)
-                
-                # Write to Excel
-                io_merged.to_excel(writer, sheet_name='IO Allocations', index=False)
-                
-                # Apply formatting
-                worksheet = writer.sheets['IO Allocations']
-                apply_formatting(worksheet)
-            
-            # ============================================
-            # B. EY ALLOCATIONS SHEET
-            # ============================================
-            if not ey_df.empty:
-                # Write EY allocations
-                ey_df.to_excel(writer, sheet_name='EY Allocations', index=False)
-                
-                # Apply formatting
-                worksheet = writer.sheets['EY Allocations']
-                apply_formatting(worksheet)
-            
-            # ============================================
-            # C. IO SUMMARY SHEET
-            # ============================================
-            if not io_df.empty:
-                io_summary_data = []
-                
-                for io_name in io_df['IO Name'].unique():
-                    io_data = io_df[io_df['IO Name'] == io_name]
-                    first_row = io_data.iloc[0]
-                    
-                    # Get IO master details
-                    io_master_info = {}
-                    if not st.session_state.io_df.empty and 'NAME' in st.session_state.io_df.columns:
-                        io_master_row = st.session_state.io_df[st.session_state.io_df['NAME'] == io_name]
-                        if not io_master_row.empty:
-                            io_master_info = io_master_row.iloc[0].to_dict()
-                    
-                    # Calculate statistics
-                    total_days = io_data['Date'].nunique()
-                    total_shifts = len(io_data)
-                    total_venues = io_data['Venue'].nunique()
-                    
-                    # Get venues with dates
-                    venue_details = []
-                    for venue in io_data['Venue'].unique():
-                        venue_dates = io_data[io_data['Venue'] == venue]['Date'].unique()
-                        venue_dates_str = ", ".join(sorted(venue_dates))
-                        
-                        # Get venue address if available
-                        venue_address = ""
-                        if not st.session_state.venue_df.empty:
-                            venue_info = st.session_state.venue_df[
-                                st.session_state.venue_df['VENUE'] == venue
-                            ]
-                            if not venue_info.empty:
-                                venue_address = venue_info.iloc[0].get('ADDRESS', '')
-                        
-                        venue_details.append(f"{venue} ({venue_dates_str}) - {venue_address}")
-                    
-                    # Calculate shift types
-                    date_shift_counts = io_data.groupby('Date')['Shift'].nunique()
-                    multiple_shift_days = (date_shift_counts > 1).sum()
-                    single_shift_days = (date_shift_counts == 1).sum()
-                    
-                    # Get dates for each shift type
-                    multiple_shift_dates = []
-                    single_shift_dates = []
-                    for date, shift_count in date_shift_counts.items():
-                        if shift_count > 1:
-                            multiple_shift_dates.append(date)
-                        else:
-                            single_shift_dates.append(date)
-                    
-                    # Prepare summary row
-                    summary_row = {
-                        'IO Name': io_name,
-                        'Role': first_row.get('Role', ''),
-                        'Total Venues Assigned': total_venues,
-                        'Venues with Dates': "\n".join(venue_details),
-                        'Total Days': total_days,
-                        'Total Shifts': total_shifts,
-                        'Multiple Shift Days': multiple_shift_days,
-                        'Single Shift Days': single_shift_days,
-                        'Multiple Shift Dates': ", ".join(multiple_shift_dates),
-                        'Single Shift Dates': ", ".join(single_shift_dates),
-                        'Area': io_master_info.get('AREA', ''),
-                        'Designation': io_master_info.get('DESIGNATION', ''),
-                        'Mobile': io_master_info.get('MOBILE', ''),
-                        'Email': io_master_info.get('EMAIL', ''),
-                        'Bank Name': io_master_info.get('BANK_NAME', ''),
-                        'Account Number': io_master_info.get('ACCOUNT_NUMBER', ''),
-                        'IFSC Code': io_master_info.get('IFSC_CODE', '')
-                    }
-                    
-                    io_summary_data.append(summary_row)
-                
-                # Create DataFrame and write to Excel
-                io_summary_df = pd.DataFrame(io_summary_data)
-                io_summary_df.to_excel(writer, sheet_name='IO Summary', index=False)
-                
-                # Apply formatting
-                worksheet = writer.sheets['IO Summary']
-                apply_formatting(worksheet)
-            
-            # ============================================
-            # D. VENUE-IO SHIFTS SHEET
-            # ============================================
-            if not io_df.empty:
-                venue_io_data = []
-                
-                # Get unique venues
-                venues = io_df['Venue'].unique()
-                
-                for venue in venues:
-                    venue_io_df = io_df[io_df['Venue'] == venue]
-                    
-                    # Get venue master info
-                    venue_info = {}
-                    if not st.session_state.venue_df.empty:
-                        venue_master = st.session_state.venue_df[
-                            st.session_state.venue_df['VENUE'] == venue
-                        ]
-                        if not venue_master.empty:
-                            venue_info = venue_master.iloc[0].to_dict()
-                    
-                    # Group by IO
-                    for io_name in venue_io_df['IO Name'].unique():
-                        io_venue_data = venue_io_df[venue_io_df['IO Name'] == io_name]
-                        first_row = io_venue_data.iloc[0]
-                        
-                        # Calculate statistics for this IO at this venue
-                        total_days_at_venue = io_venue_data['Date'].nunique()
-                        total_shifts_at_venue = len(io_venue_data)
-                        
-                        # Calculate shift types
-                        date_shift_counts = io_venue_data.groupby('Date')['Shift'].nunique()
-                        multiple_shifts = (date_shift_counts > 1).sum()
-                        single_shifts = (date_shift_counts == 1).sum()
-                        
-                        # Get dates for each shift type
-                        multiple_shift_dates = []
-                        single_shift_dates = []
-                        for date, shift_count in date_shift_counts.items():
-                            if shift_count > 1:
-                                multiple_shift_dates.append(date)
-                            else:
-                                single_shift_dates.append(date)
-                        
-                        # Get IO master info
-                        io_master_info = {}
-                        if not st.session_state.io_df.empty and 'NAME' in st.session_state.io_df.columns:
-                            io_master_row = st.session_state.io_df[st.session_state.io_df['NAME'] == io_name]
-                            if not io_master_row.empty:
-                                io_master_info = io_master_row.iloc[0].to_dict()
-                        
-                        # Prepare row
-                        venue_io_row = {
-                            'Venue': venue,
-                            'IO Name': io_name,
-                            'Role': first_row.get('Role', ''),
-                            'Total Days at Venue': total_days_at_venue,
-                            'Multiple Shifts Count': multiple_shifts,
-                            'Single Shifts Count': single_shifts,
-                            'Multiple Shift Dates': ", ".join(multiple_shift_dates),
-                            'Single Shift Dates': ", ".join(single_shift_dates),
-                            'IO Area': io_master_info.get('AREA', ''),
-                            'IO Designation': io_master_info.get('DESIGNATION', ''),
-                            'IO Mobile': io_master_info.get('MOBILE', ''),
-                            'Venue Address': venue_info.get('ADDRESS', ''),
-                            'Centre Code': venue_info.get('CENTRE_CODE', ''),
-                            'Centre Name': venue_info.get('CENTRE NAME', venue),
-                            'District': venue_info.get('DISTRICT', ''),
-                            'Capacity': venue_info.get('CAPACITY', '')
-                        }
-                        
-                        venue_io_data.append(venue_io_row)
-                
-                # Create DataFrame and write to Excel
-                if venue_io_data:
-                    venue_io_df = pd.DataFrame(venue_io_data)
-                    venue_io_df.to_excel(writer, sheet_name='Venue-IO Shifts', index=False)
-                    
-                    # Apply formatting
-                    worksheet = writer.sheets['Venue-IO Shifts']
-                    apply_formatting(worksheet)
-            
-            # ============================================
-            # E. VENUE-ROLE SUMMARY SHEET
-            # ============================================
-            if not io_df.empty:
-                venue_role_data = []
-                
-                for venue in io_df['Venue'].unique():
-                    venue_data = io_df[io_df['Venue'] == venue]
-                    
-                    for role in venue_data['Role'].unique():
-                        role_data = venue_data[venue_data['Role'] == role]
-                        
-                        # Count assignments
-                        assignments_count = len(role_data)
-                        
-                        # Get unique dates
-                        unique_dates = sorted(role_data['Date'].unique())
-                        dates_str = ", ".join(unique_dates)
-                        
-                        # Get unique IOs
-                        unique_ios = sorted(role_data['IO Name'].unique())
-                        ios_str = ", ".join(unique_ios)
-                        
-                        venue_role_row = {
-                            'Venue': venue,
-                            'Role': role,
-                            'Assignments Count': assignments_count,
-                            'Dates': dates_str,
-                            'IOs Assigned': ios_str
-                        }
-                        
-                        venue_role_data.append(venue_role_row)
-                
-                # Create DataFrame and write to Excel
-                if venue_role_data:
-                    venue_role_df = pd.DataFrame(venue_role_data)
-                    venue_role_df.to_excel(writer, sheet_name='Venue-Role Summary', index=False)
-                    
-                    # Apply formatting
-                    worksheet = writer.sheets['Venue-Role Summary']
-                    apply_formatting(worksheet)
-            
-            # ============================================
-            # F. DATE SUMMARY SHEET
-            # ============================================
-            if not io_df.empty:
-                date_summary_data = []
-                
-                for date in io_df['Date'].unique():
-                    date_data = io_df[io_df['Date'] == date]
-                    
-                    unique_venues = date_data['Venue'].nunique()
-                    unique_ios = date_data['IO Name'].nunique()
-                    total_shifts = len(date_data)
-                    
-                    # Get venue list
-                    venues_list = sorted(date_data['Venue'].unique())
-                    venues_str = ", ".join(venues_list)
-                    
-                    # Get IO list
-                    ios_list = sorted(date_data['IO Name'].unique())
-                    ios_str = ", ".join(ios_list)
-                    
-                    date_summary_row = {
-                        'Date': date,
-                        'Unique Venues': unique_venues,
-                        'Unique IOs': unique_ios,
-                        'Total Shifts': total_shifts,
-                        'Venues': venues_str,
-                        'IOs': ios_str
-                    }
-                    
-                    date_summary_data.append(date_summary_row)
-                
-                # Create DataFrame and write to Excel
-                if date_summary_data:
-                    date_summary_df = pd.DataFrame(date_summary_data)
-                    date_summary_df.to_excel(writer, sheet_name='Date Summary', index=False)
-                    
-                    # Apply formatting
-                    worksheet = writer.sheets['Date Summary']
-                    apply_formatting(worksheet)
-            
-            # ============================================
-            # G. EY SUMMARY SHEET
-            # ============================================
-            if not ey_df.empty:
-                ey_summary_data = []
-                
-                for ey_person in ey_df['EY Personnel'].unique():
-                    ey_person_data = ey_df[ey_df['EY Personnel'] == ey_person]
-                    first_row = ey_person_data.iloc[0]
-                    
-                    # Calculate statistics
-                    total_venues = ey_person_data['Venue'].nunique()
-                    total_days = ey_person_data['Date'].nunique()
-                    total_shifts = len(ey_person_data)
-                    
-                    # Get venues list
-                    venues_list = sorted(ey_person_data['Venue'].unique())
-                    venues_str = ", ".join(venues_list)
-                    
-                    # Get dates list
-                    dates_list = sorted(ey_person_data['Date'].unique())
-                    dates_str = ", ".join(dates_list)
-                    
-                    # Calculate amount
-                    rate = first_row.get('Rate (₹)', st.session_state.remuneration_rates['ey_personnel'])
-                    total_amount = total_days * rate
-                    
-                    ey_summary_row = {
-                        'EY Personnel': ey_person,
-                        'Venues': venues_str,
-                        'Total Days': total_days,
-                        'Total Shifts': total_shifts,
-                        'Rate per Day (₹)': rate,
-                        'Total Amount (₹)': total_amount,
-                        'Dates': dates_str,
-                        'Mobile': first_row.get('Mobile', ''),
-                        'Email': first_row.get('Email', ''),
-                        'ID Number': first_row.get('ID Number', ''),
-                        'Designation': first_row.get('Designation', '')
-                    }
-                    
-                    ey_summary_data.append(ey_summary_row)
-                
-                # Create DataFrame and write to Excel
-                if ey_summary_data:
-                    ey_summary_df = pd.DataFrame(ey_summary_data)
-                    ey_summary_df.to_excel(writer, sheet_name='EY Summary', index=False)
-                    
-                    # Apply formatting
-                    worksheet = writer.sheets['EY Summary']
-                    apply_formatting(worksheet)
-            
-            # ============================================
-            # H. DELETED RECORDS SHEET
-            # ============================================
-            if st.session_state.deleted_records:
-                deleted_df = pd.DataFrame(st.session_state.deleted_records)
-                deleted_df.to_excel(writer, sheet_name='Deleted Records', index=False)
-                
-                # Apply formatting
-                worksheet = writer.sheets['Deleted Records']
-                apply_formatting(worksheet)
-            
-            # ============================================
-            # I. RATES SHEET
-            # ============================================
-            rates_data = {
-                'Category': ['Multiple Shifts', 'Single Shift', 'Mock Test', 'EY Personnel'],
-                'Amount (₹)': [
-                    st.session_state.remuneration_rates['multiple_shifts'],
-                    st.session_state.remuneration_rates['single_shift'],
-                    st.session_state.remuneration_rates['mock_test'],
-                    st.session_state.remuneration_rates['ey_personnel']
-                ],
-                'Description': [
-                    'For assignments with multiple shifts on same day',
-                    'For assignments with single shift',
-                    'For mock test assignments',
-                    'Daily rate for EY personnel'
-                ]
-            }
-            
-            rates_df = pd.DataFrame(rates_data)
-            rates_df.to_excel(writer, sheet_name='Rates', index=False)
-            
-            # Apply formatting
-            worksheet = writer.sheets['Rates']
-            apply_formatting(worksheet)
-            
-            # ============================================
-            # Auto-adjust column widths
-            # ============================================
-            for sheet_name in writer.sheets:
-                worksheet = writer.sheets[sheet_name]
-                for column in worksheet.columns:
-                    max_length = 0
-                    column_letter = get_column_letter(column[0].column)
-                    
-                    for cell in column:
-                        try:
-                            if len(str(cell.value)) > max_length:
-                                max_length = len(str(cell.value))
-                        except:
-                            pass
-                    
-                    adjusted_width = min(max_length + 2, 50)
-                    worksheet.column_dimensions[column_letter].width = adjusted_width
+    allocation_count = 0
+    conflicts = []
+    warnings_confirmed = []
+    
+    for date_info in selected_date_shifts:
+        # Check for conflicts
+        is_conflict, message = check_allocation_conflict_enhanced(
+            person_name, date_info, role, allocation_type
+        )
         
-        output.seek(0)
-        return output
-    
-    except Exception as e:
-        st.error(f"Error generating report: {str(e)}")
-        logging.error(f"Report generation error: {str(e)}")
-        return None
-
-def export_remuneration_report():
-    """Generate comprehensive remuneration report with all sheets"""
-    if not st.session_state.allocation and not st.session_state.ey_allocation:
-        st.warning("No allocation data available")
-        return None
-    
-    try:
-        # Create Excel writer
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            
-            # Get current exam data
-            io_allocations = st.session_state.allocation
-            ey_allocations = st.session_state.ey_allocation
-            
-            # Convert to DataFrames
-            io_df = pd.DataFrame(io_allocations)
-            ey_df = pd.DataFrame(ey_allocations)
-            
-            # ============================================
-            # A. IO DETAILED REPORT SHEET
-            # ============================================
-            if not io_df.empty:
-                io_detailed_data = []
-                
-                for (io_name, date), group in io_df.groupby(['IO Name', 'Date']):
-                    first_row = group.iloc[0]
-                    
-                    # Get venues for this day
-                    venues = sorted(group['Venue'].unique())
-                    venues_str = ", ".join(venues)
-                    
-                    # Calculate shift details
-                    total_shifts = len(group)
-                    shift_list = sorted(group['Shift'].unique())
-                    shift_details = ", ".join(shift_list)
-                    
-                    # Determine shift type and amount
-                    mock_test = any(group['Mock Test'])
-                    if mock_test:
-                        shift_type = "Mock Test"
-                        amount = st.session_state.remuneration_rates['mock_test']
-                    else:
-                        if total_shifts > 1:
-                            shift_type = "Multiple Shifts"
-                            amount = st.session_state.remuneration_rates['multiple_shifts']
-                        else:
-                            shift_type = "Single Shift"
-                            amount = st.session_state.remuneration_rates['single_shift']
-                    
-                    # Get reference info
-                    order_no = first_row.get('Order No.', '')
-                    page_no = first_row.get('Page No.', '')
-                    
-                    io_detailed_row = {
-                        'IO Name': io_name,
-                        'Venues': venues_str,
-                        'Role': first_row.get('Role', ''),
-                        'Date': date,
-                        'Total Shifts': total_shifts,
-                        'Shift Type': shift_type,
-                        'Shift Details': shift_details,
-                        'Mock Test': 'Yes' if mock_test else 'No',
-                        'Amount (₹)': amount,
-                        'Order No.': order_no,
-                        'Page No.': page_no
-                    }
-                    
-                    io_detailed_data.append(io_detailed_row)
-                
-                # Create DataFrame and write to Excel
-                if io_detailed_data:
-                    io_detailed_df = pd.DataFrame(io_detailed_data)
-                    io_detailed_df.to_excel(writer, sheet_name='IO Detailed Report', index=False)
-                    
-                    # Apply formatting
-                    worksheet = writer.sheets['IO Detailed Report']
-                    apply_formatting(worksheet)
-            
-            # ============================================
-            # B. IO SUMMARY SHEET
-            # ============================================
-            if not io_df.empty:
-                io_summary_data = []
-                
-                for io_name in io_df['IO Name'].unique():
-                    io_data = io_df[io_df['IO Name'] == io_name]
-                    first_row = io_data.iloc[0]
-                    
-                    # Get IO master details
-                    io_master_info = {}
-                    if not st.session_state.io_df.empty and 'NAME' in st.session_state.io_df.columns:
-                        io_master_row = st.session_state.io_df[st.session_state.io_df['NAME'] == io_name]
-                        if not io_master_row.empty:
-                            io_master_info = io_master_row.iloc[0].to_dict()
-                    
-                    # Calculate statistics
-                    total_days = io_data['Date'].nunique()
-                    total_shifts = len(io_data)
-                    total_venues = io_data['Venue'].nunique()
-                    
-                    # Get venues list
-                    venues_list = sorted(io_data['Venue'].unique())
-                    venues_str = ", ".join(venues_list)
-                    
-                    # Calculate shift types and amounts
-                    mock_days = io_data[io_data['Mock Test']]['Date'].nunique()
-                    exam_days = total_days - mock_days
-                    
-                    date_shift_counts = io_data.groupby('Date')['Shift'].nunique()
-                    multiple_shift_days = (date_shift_counts > 1).sum()
-                    single_shift_days = (date_shift_counts == 1).sum()
-                    
-                    # Get dates for each category
-                    mock_dates = sorted(io_data[io_data['Mock Test']]['Date'].unique())
-                    multiple_shift_dates = []
-                    single_shift_dates = []
-                    
-                    for date, shift_count in date_shift_counts.items():
-                        if shift_count > 1 and date not in mock_dates:
-                            multiple_shift_dates.append(date)
-                        elif shift_count == 1 and date not in mock_dates:
-                            single_shift_dates.append(date)
-                    
-                    # Calculate amounts
-                    mock_amount = mock_days * st.session_state.remuneration_rates['mock_test']
-                    multiple_amount = multiple_shift_days * st.session_state.remuneration_rates['multiple_shifts']
-                    single_amount = single_shift_days * st.session_state.remuneration_rates['single_shift']
-                    total_amount = mock_amount + multiple_amount + single_amount
-                    
-                    # Prepare summary row
-                    summary_row = {
-                        'IO Name': io_name,
-                        'Role': first_row.get('Role', ''),
-                        'Venues': venues_str,
-                        'Total Amount (₹)': total_amount,
-                        'Total Shifts': total_shifts,
-                        'Total Days': total_days,
-                        'Mock Days': mock_days,
-                        'Exam Days': exam_days,
-                        'Multiple Shift Days': multiple_shift_days,
-                        'Single Shift Days': single_shift_days,
-                        'Mock Dates': ", ".join(mock_dates),
-                        'Multiple Shift Dates': ", ".join(multiple_shift_dates),
-                        'Single Shift Dates': ", ".join(single_shift_dates),
-                        'Mock Amount (₹)': mock_amount,
-                        'Multiple Shift Amount (₹)': multiple_amount,
-                        'Single Shift Amount (₹)': single_amount,
-                        'Area': io_master_info.get('AREA', ''),
-                        'Designation': io_master_info.get('DESIGNATION', ''),
-                        'Mobile': io_master_info.get('MOBILE', ''),
-                        'Email': io_master_info.get('EMAIL', ''),
-                        'Bank Name': io_master_info.get('BANK_NAME', ''),
-                        'Account Number': io_master_info.get('ACCOUNT_NUMBER', ''),
-                        'IFSC Code': io_master_info.get('IFSC_CODE', '')
-                    }
-                    
-                    io_summary_data.append(summary_row)
-                
-                # Create DataFrame and write to Excel
-                if io_summary_data:
-                    io_summary_df = pd.DataFrame(io_summary_data)
-                    io_summary_df.to_excel(writer, sheet_name='IO Summary', index=False)
-                    
-                    # Apply formatting
-                    worksheet = writer.sheets['IO Summary']
-                    apply_formatting(worksheet)
-            
-            # ============================================
-            # C. EY PERSONNEL REPORT SHEET
-            # ============================================
-            if not ey_df.empty:
-                ey_report_data = []
-                
-                for (ey_person, date), group in ey_df.groupby(['EY Personnel', 'Date']):
-                    first_row = group.iloc[0]
-                    
-                    # Get venues for this day
-                    venues = sorted(group['Venue'].unique())
-                    venues_str = ", ".join(venues)
-                    
-                    # Calculate shift details
-                    total_shifts = len(group)
-                    shift_list = sorted(group['Shift'].unique())
-                    shift_details = ", ".join(shift_list)
-                    
-                    # Get rate and amount
-                    rate = first_row.get('Rate (₹)', st.session_state.remuneration_rates['ey_personnel'])
-                    amount = rate  # Per day rate
-                    
-                    # Get reference info
-                    order_no = first_row.get('Order No.', '')
-                    page_no = first_row.get('Page No.', '')
-                    
-                    ey_report_row = {
-                        'EY Personnel': ey_person,
-                        'Venues': venues_str,
-                        'Date': date,
-                        'Total Shifts': total_shifts,
-                        'Shift Details': shift_details,
-                        'Mock Test': 'No',
-                        'Amount (₹)': amount,
-                        'Rate Type': 'Per Day',
-                        'Order No.': order_no,
-                        'Page No.': page_no
-                    }
-                    
-                    ey_report_data.append(ey_report_row)
-                
-                # Create DataFrame and write to Excel
-                if ey_report_data:
-                    ey_report_df = pd.DataFrame(ey_report_data)
-                    ey_report_df.to_excel(writer, sheet_name='EY Personnel Report', index=False)
-                    
-                    # Apply formatting
-                    worksheet = writer.sheets['EY Personnel Report']
-                    apply_formatting(worksheet)
-            
-            # ============================================
-            # D. EY SUMMARY SHEET
-            # ============================================
-            if not ey_df.empty:
-                ey_summary_data = []
-                
-                for ey_person in ey_df['EY Personnel'].unique():
-                    ey_person_data = ey_df[ey_df['EY Personnel'] == ey_person]
-                    first_row = ey_person_data.iloc[0]
-                    
-                    # Calculate statistics
-                    total_venues = ey_person_data['Venue'].nunique()
-                    total_days = ey_person_data['Date'].nunique()
-                    total_shifts = len(ey_person_data)
-                    
-                    # Get venues list
-                    venues_list = sorted(ey_person_data['Venue'].unique())
-                    venues_str = ", ".join(venues_list)
-                    
-                    # Get dates list
-                    dates_list = sorted(ey_person_data['Date'].unique())
-                    dates_str = ", ".join(dates_list)
-                    
-                    # Calculate amount
-                    rate = first_row.get('Rate (₹)', st.session_state.remuneration_rates['ey_personnel'])
-                    total_amount = total_days * rate
-                    
-                    # Get reference info
-                    order_no = first_row.get('Order No.', '')
-                    page_no = first_row.get('Page No.', '')
-                    
-                    ey_summary_row = {
-                        'EY Personnel': ey_person,
-                        'Venues': venues_str,
-                        'Total Amount (₹)': total_amount,
-                        'Total Days': total_days,
-                        'Total Shifts': total_shifts,
-                        'Order No.': order_no,
-                        'Page No.': page_no,
-                        'Rate per Day (₹)': rate,
-                        'Dates': dates_str
-                    }
-                    
-                    ey_summary_data.append(ey_summary_row)
-                
-                # Create DataFrame and write to Excel
-                if ey_summary_data:
-                    ey_summary_df = pd.DataFrame(ey_summary_data)
-                    ey_summary_df.to_excel(writer, sheet_name='EY Summary', index=False)
-                    
-                    # Apply formatting
-                    worksheet = writer.sheets['EY Summary']
-                    apply_formatting(worksheet)
-            
-            # ============================================
-            # E. DELETED RECORDS SHEET
-            # ============================================
-            if st.session_state.deleted_records:
-                deleted_df = pd.DataFrame(st.session_state.deleted_records)
-                deleted_df.to_excel(writer, sheet_name='Deleted Records', index=False)
-                
-                # Apply formatting
-                worksheet = writer.sheets['Deleted Records']
-                apply_formatting(worksheet)
-            
-            # ============================================
-            # F. RATES SHEET
-            # ============================================
-            rates_data = {
-                'Category': ['Multiple Shifts', 'Single Shift', 'Mock Test', 'EY Personnel'],
-                'Amount (₹)': [
-                    st.session_state.remuneration_rates['multiple_shifts'],
-                    st.session_state.remuneration_rates['single_shift'],
-                    st.session_state.remuneration_rates['mock_test'],
-                    st.session_state.remuneration_rates['ey_personnel']
-                ],
-                'Description': [
-                    'For assignments with multiple shifts on same day',
-                    'For assignments with single shift',
-                    'For mock test assignments',
-                    'Daily rate for EY personnel'
-                ]
-            }
-            
-            rates_df = pd.DataFrame(rates_data)
-            rates_df.to_excel(writer, sheet_name='Rates', index=False)
-            
-            # Apply formatting
-            worksheet = writer.sheets['Rates']
-            apply_formatting(worksheet)
-            
-            # ============================================
-            # Auto-adjust column widths
-            # ============================================
-            for sheet_name in writer.sheets:
-                worksheet = writer.sheets[sheet_name]
-                for column in worksheet.columns:
-                    max_length = 0
-                    column_letter = get_column_letter(column[0].column)
-                    
-                    for cell in column:
-                        try:
-                            if len(str(cell.value)) > max_length:
-                                max_length = len(str(cell.value))
-                        except:
-                            pass
-                    
-                    adjusted_width = min(max_length + 2, 50)
-                    worksheet.column_dimensions[column_letter].width = adjusted_width
-        
-        output.seek(0)
-        return output
-    
-    except Exception as e:
-        st.error(f"Error generating remuneration report: {str(e)}")
-        logging.error(f"Remuneration report generation error: {str(e)}")
-        return None
-
-def apply_formatting(worksheet):
-    """Apply formatting to Excel worksheet"""
-    # Define styles
-    header_fill = PatternFill(start_color="4169E1", end_color="4169E1", fill_type="solid")
-    header_font = Font(color="FFFFFF", bold=True, size=12)
-    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    
-    data_font = Font(size=11)
-    data_alignment = Alignment(vertical="center", wrap_text=True)
-    border = Border(
-        left=Side(border_style="thin", color="000000"),
-        right=Side(border_style="thin", color="000000"),
-        top=Side(border_style="thin", color="000000"),
-        bottom=Side(border_style="thin", color="000000")
-    )
-    
-    # Apply header formatting
-    for cell in worksheet[1]:
-        cell.fill = header_fill
-        cell.font = header_font
-        cell.alignment = header_alignment
-        cell.border = border
-    
-    # Apply data formatting
-    for row in worksheet.iter_rows(min_row=2):
-        for cell in row:
-            cell.font = data_font
-            cell.alignment = data_alignment
-            cell.border = border
-            
-            # Format numeric cells
-            if isinstance(cell.value, (int, float)):
-                cell.number_format = '#,##0'
-    
-    # Freeze header row
-    worksheet.freeze_panes = 'A2'
-
-# ============================================================================
-# ENHANCED DATE SELECTION COMPONENT
-# ============================================================================
-
-def create_date_selector(venue_data, selected_venue):
-    """Create enhanced date selection interface with color coding"""
-    if venue_data.empty:
-        st.warning(f"No data found for venue: {selected_venue}")
-        return []
-    
-    # Get unique dates
-    unique_dates = sorted(venue_data['DATE'].dropna().unique())
-    
-    if not unique_dates:
-        st.warning(f"No dates available for {selected_venue}")
-        return []
-    
-    st.write(f"**Available dates for {selected_venue}:**")
-    
-    # Initialize date selection state if not exists
-    if 'date_selection_state' not in st.session_state:
-        st.session_state.date_selection_state = {}
-    
-    if 'expanded_dates' not in st.session_state:
-        st.session_state.expanded_dates = {}
-    
-    # Get venue key for state management
-    venue_key = f"{st.session_state.current_exam_key}_{selected_venue}"
-    if venue_key not in st.session_state.date_selection_state:
-        st.session_state.date_selection_state[venue_key] = {}
-    
-    if venue_key not in st.session_state.expanded_dates:
-        st.session_state.expanded_dates[venue_key] = {}
-    
-    selected_date_shifts = []
-    
-    for date_str in unique_dates:
-        # Get shifts for this date
-        date_shifts_data = venue_data[venue_data['DATE'] == date_str]
-        date_shifts = date_shifts_data['SHIFT'].unique()
-        
-        # Convert to strings and filter
-        date_shifts = [str(shift) for shift in date_shifts if pd.notna(shift) and str(shift) != '']
-        
-        if not date_shifts:
+        if is_conflict:
+            conflicts.append({
+                'date_info': date_info,
+                'message': message,
+                'type': 'error'
+            })
             continue
         
-        # Initialize date state if not exists
-        date_key = f"{venue_key}_{date_str}"
-        if date_key not in st.session_state.date_selection_state[venue_key]:
-            st.session_state.date_selection_state[venue_key][date_key] = {
-                'all_selected': False,
-                'shifts': {shift: False for shift in date_shifts}
-            }
-        
-        if date_str not in st.session_state.expanded_dates[venue_key]:
-            st.session_state.expanded_dates[venue_key][date_str] = False
-        
-        # Get current state
-        date_state = st.session_state.date_selection_state[venue_key][date_key]
-        is_expanded = st.session_state.expanded_dates[venue_key][date_str]
-        
-        # Calculate selection status
-        selected_shifts = [shift for shift, selected in date_state['shifts'].items() if selected]
-        all_selected = len(selected_shifts) == len(date_shifts)
-        partially_selected = len(selected_shifts) > 0 and not all_selected
-        none_selected = len(selected_shifts) == 0
-        
-        # Determine color based on selection
-        if all_selected:
-            bg_color = "#4CAF50"  # Green
-            border_color = "#388E3C"
-            status_text = "✓ All Selected"
-            emoji = "🟢"
-        elif partially_selected:
-            bg_color = "#FF9800"  # Orange
-            border_color = "#F57C00"
-            status_text = f"✓ {len(selected_shifts)}/{len(date_shifts)} Selected"
-            emoji = "🟠"
-        else:
-            bg_color = "#FFEB3B"  # Yellow
-            border_color = "#FBC02D"
-            status_text = "Not Selected"
-            emoji = "🟡"
-        
-        # Create date header with selection status
-        col1, col2, col3 = st.columns([3, 2, 1])
-        
-        with col1:
-            # Create a styled date header
-            st.markdown(f"""
-                <div style="
-                    background-color: {bg_color};
-                    color: #333;
-                    padding: 10px 15px;
-                    border-radius: 8px;
-                    border: 2px solid {border_color};
-                    margin: 5px 0;
-                    cursor: pointer;
-                    font-weight: bold;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                ">
-                {emoji} <strong>{date_str}</strong> - {status_text}
-                </div>
-            """, unsafe_allow_html=True)
-        
-        with col2:
-            # Single click to select all
-            if st.button(f"🎯 Select All", key=f"select_all_{date_key}", 
-                        use_container_width=True):
-                # Toggle all shifts
-                if all_selected:
-                    # Deselect all
-                    for shift in date_shifts:
-                        date_state['shifts'][shift] = False
+        # Check for warnings (Flying Squad multiple venues)
+        if "Warning:" in message:
+            warning_key = f"{person_name}_{date_info['date']}_{date_info['shift']}"
+            if warning_key not in warnings_confirmed:
+                if 'conflict_warning' in st.session_state and st.session_state.conflict_warning['confirmed']:
+                    warnings_confirmed.append(warning_key)
                 else:
-                    # Select all
-                    for shift in date_shifts:
-                        date_state['shifts'][shift] = True
-                st.rerun()
+                    if handle_conflict_warning(message, date_info):
+                        warnings_confirmed.append(warning_key)
+                    continue
         
-        with col3:
-            # Toggle expand/collapse
-            expand_label = "📖 Show Shifts" if not is_expanded else "📕 Hide Shifts"
-            if st.button(expand_label, key=f"expand_{date_key}", 
-                        use_container_width=True):
-                st.session_state.expanded_dates[venue_key][date_str] = not is_expanded
-                st.rerun()
+        # Create allocation
+        if allocation_type == "IO":
+            allocation = {
+                'Sl. No.': len(st.session_state.allocation) + allocation_count + 1,
+                'Venue': date_info['venue'],
+                'Date': date_info['date'],
+                'Shift': date_info['shift'],
+                'IO Name': person_name,
+                'Area': st.session_state.current_allocation_area,
+                'Role': role,
+                'Mock Test': date_info['is_mock'],
+                'Exam': st.session_state.current_exam_key,
+                'Order No.': ref_data['order_no'],
+                'Page No.': ref_data['page_no'],
+                'Reference Remarks': ref_data.get('remarks', ''),
+                'Timestamp': datetime.now().isoformat()
+            }
+            
+            st.session_state.allocation.append(allocation)
         
-        # Show shift selection if expanded
-        if is_expanded:
-            st.markdown("**Select Shifts:**")
+        elif allocation_type == "EY":
+            ey_row = st.session_state.current_allocation_ey_row
             
-            # Create columns for shifts
-            shift_cols = st.columns(min(4, len(date_shifts)))
+            allocation = {
+                'Sl. No.': len(st.session_state.ey_allocation) + allocation_count + 1,
+                'Venue': date_info['venue'],
+                'Date': date_info['date'],
+                'Shift': date_info['shift'],
+                'EY Personnel': person_name,
+                'Mobile': ey_row.get('MOBILE', ''),
+                'Email': ey_row.get('EMAIL', ''),
+                'ID Number': ey_row.get('ID_NUMBER', ''),
+                'Designation': ey_row.get('DESIGNATION', ''),
+                'Department': ey_row.get('DEPARTMENT', ''),
+                'Mock Test': False,
+                'Exam': st.session_state.current_exam_key,
+                'Rate (₹)': st.session_state.remuneration_rates['ey_personnel'],
+                'Order No.': ref_data['order_no'],
+                'Page No.': ref_data['page_no'],
+                'Reference Remarks': ref_data.get('remarks', ''),
+                'Timestamp': datetime.now().isoformat()
+            }
             
-            for idx, shift in enumerate(sorted(date_shifts)):
-                col_idx = idx % len(shift_cols)
-                with shift_cols[col_idx]:
-                    shift_selected = st.checkbox(
-                        f"⏰ {shift}",
-                        value=date_state['shifts'][shift],
-                        key=f"shift_{date_key}_{shift}"
-                    )
-                    date_state['shifts'][shift] = shift_selected
-            
-            st.markdown("---")
+            st.session_state.ey_allocation.append(allocation)
         
-        # Add selected shifts to result
-        for shift, selected in date_state['shifts'].items():
-            if selected:
-                selected_date_shifts.append({
-                    'date': date_str,
-                    'shift': shift,
-                    'is_mock': False
-                })
+        allocation_count += 1
     
-    return selected_date_shifts
+    return allocation_count, conflicts, warnings_confirmed
 
 # ============================================================================
 # DASHBOARD MODULE
@@ -1587,11 +1249,11 @@ def show_dashboard():
         <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
                  color: white; border-radius: 10px; margin-bottom: 30px;'>
             <h1>📊 SYSTEM DASHBOARD</h1>
-            <p>Comprehensive Overview of Allocation System</p>
+            <p>Enhanced Date Selection System</p>
         </div>
     """, unsafe_allow_html=True)
     
-    # Quick Stats Row
+    # Quick Stats
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
@@ -1599,7 +1261,6 @@ def show_dashboard():
             <div style='background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center;'>
                 <h3 style='color: #4169e1;'>👨‍💼 IO Allocations</h3>
                 <h1 style='color: #2c3e50;'>{len(st.session_state.allocation)}</h1>
-                <p style='color: #7f8c8d;'>Active Entries</p>
             </div>
         """, unsafe_allow_html=True)
     
@@ -1608,7 +1269,6 @@ def show_dashboard():
             <div style='background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center;'>
                 <h3 style='color: #9370db;'>👁️ EY Allocations</h3>
                 <h1 style='color: #2c3e50;'>{len(st.session_state.ey_allocation)}</h1>
-                <p style='color: #7f8c8d;'>Active Entries</p>
             </div>
         """, unsafe_allow_html=True)
     
@@ -1617,7 +1277,6 @@ def show_dashboard():
             <div style='background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center;'>
                 <h3 style='color: #20b2aa;'>📚 Total Exams</h3>
                 <h1 style='color: #2c3e50;'>{len(st.session_state.exam_data)}</h1>
-                <p style='color: #7f8c8d;'>Created Exams</p>
             </div>
         """, unsafe_allow_html=True)
     
@@ -1627,75 +1286,66 @@ def show_dashboard():
             <div style='background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); text-align: center;'>
                 <h3 style='color: #ff8c00;'>🎯 Active Exam</h3>
                 <h4 style='color: #2c3e50;'>{current_exam[:20]}{'...' if len(current_exam) > 20 else ''}</h4>
-                <p style='color: #7f8c8d;'>Currently Selected</p>
             </div>
         """, unsafe_allow_html=True)
     
-    st.markdown("<br>", unsafe_allow_html=True)
+    # System Features
+    st.markdown("### 🚀 Enhanced Date Selection System")
     
-    # Recent Activity and Quick Actions
-    col5, col6 = st.columns([2, 1])
+    col_feat1, col_feat2, col_feat3 = st.columns(3)
     
-    with col5:
-        st.markdown("### 📈 Recent Activity")
-        
-        if st.session_state.allocation or st.session_state.ey_allocation:
-            # Show recent IO allocations
-            if st.session_state.allocation:
-                recent_io = st.session_state.allocation[-5:] if len(st.session_state.allocation) >= 5 else st.session_state.allocation
-                if recent_io:
-                    io_df = pd.DataFrame(recent_io)[['IO Name', 'Venue', 'Date', 'Shift', 'Role']]
-                    st.dataframe(io_df, use_container_width=True, hide_index=True)
-            else:
-                st.info("No recent IO allocations")
-            
-            # Show recent EY allocations
-            if st.session_state.ey_allocation:
-                st.markdown("#### Recent EY Allocations")
-                recent_ey = st.session_state.ey_allocation[-5:] if len(st.session_state.ey_allocation) >= 5 else st.session_state.ey_allocation
-                if recent_ey:
-                    ey_df = pd.DataFrame(recent_ey)[['EY Personnel', 'Venue', 'Date', 'Shift']]
-                    st.dataframe(ey_df, use_container_width=True, hide_index=True)
-        else:
-            st.info("No recent activity to display")
+    with col_feat1:
+        st.markdown("""
+            <div style='padding: 15px; background: #f8f9fa; border-radius: 8px;'>
+                <h4>📅 Normal Exam Mode</h4>
+                <p>• Load dates from venue Excel</p>
+                <p>• Grid layout with color coding</p>
+                <p>• Single-click to toggle all shifts</p>
+            </div>
+        """, unsafe_allow_html=True)
     
-    with col6:
-        st.markdown("### ⚡ Quick Actions")
-        
+    with col_feat2:
+        st.markdown("""
+            <div style='padding: 15px; background: #f8f9fa; border-radius: 8px;'>
+                <h4>🎭 Mock Test Mode</h4>
+                <p>• Manual date entry</p>
+                <p>• Distinct blue styling</p>
+                <p>• Separate from regular dates</p>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    with col_feat3:
+        st.markdown("""
+            <div style='padding: 15px; background: #f8f9fa; border-radius: 8px;'>
+                <h4>👁️ EY Personnel Mode</h4>
+                <p>• Multi-venue selection</p>
+                <p>• Assign to all selected venues</p>
+                <p>• Advanced conflict checking</p>
+            </div>
+        """, unsafe_allow_html=True)
+    
+    # Quick Actions
+    st.markdown("### ⚡ Quick Actions")
+    
+    col_act1, col_act2, col_act3 = st.columns(3)
+    
+    with col_act1:
         if st.button("📥 Load Default Data", use_container_width=True):
             load_default_master_data()
-            st.success("Default data loaded!")
             st.rerun()
-        
+    
+    with col_act2:
         if st.button("🔄 Refresh Data", use_container_width=True):
             load_all_data()
-            st.success("Data refreshed!")
             st.rerun()
-        
-        if st.button("💾 Create Backup", use_container_width=True):
-            backup_file = create_backup("manual_backup")
-            if backup_file:
-                st.success(f"Backup created: {backup_file.name}")
-            else:
-                st.error("Failed to create backup")
-        
+    
+    with col_act3:
         if st.button("📊 View All Reports", use_container_width=True):
-            st.session_state.menu = "Reports"
+            st.session_state.menu = "reports"
             st.rerun()
-        
-        st.markdown("---")
-        st.markdown("### ℹ️ System Status")
-        st.info(f"**Last Updated:** {datetime.now().strftime('%d-%m-%Y %H:%M:%S')}")
-        
-        # Check data integrity
-        total_records = len(st.session_state.allocation) + len(st.session_state.ey_allocation)
-        if total_records > 0:
-            st.success(f"✅ System is operational with {total_records} records")
-        else:
-            st.warning("⚠️ System is ready but no records found")
 
 # ============================================================================
-# EXAM MANAGEMENT MODULE - FIXED
+# EXAM MANAGEMENT MODULE
 # ============================================================================
 
 def show_exam_management():
@@ -1704,82 +1354,60 @@ def show_exam_management():
         <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #20b2aa 0%, #3cb371 100%); 
                  color: white; border-radius: 10px; margin-bottom: 30px;'>
             <h1>📝 EXAM MANAGEMENT</h1>
-            <p>Create, Load, and Manage Examination Data</p>
         </div>
     """, unsafe_allow_html=True)
     
-    # Two column layout
     col1, col2 = st.columns([2, 1])
     
     with col1:
-        # Create/Update Exam
         st.markdown("### 🆕 Create / Update Exam")
         
-        with st.container():
-            exam_name = st.text_input("Exam Name:", 
-                                    value=st.session_state.exam_name,
-                                    placeholder="e.g., Combined Graduate Level Examination")
-            
-            current_year = datetime.now().year
-            year_options = [str(y) for y in range(current_year - 5, current_year + 3)]
-            exam_year = st.selectbox("Exam Year:", 
-                                   year_options,
-                                   index=year_options.index(str(current_year)) if str(current_year) in year_options else 0)
-            
-            col_a, col_b = st.columns(2)
-            with col_a:
-                if st.button("✅ Create/Update Exam", use_container_width=True):
-                    if exam_name.strip():
-                        exam_key = f"{exam_name.strip()} - {exam_year}"
-                        
-                        # Set current exam
-                        st.session_state.current_exam_key = exam_key
-                        st.session_state.exam_name = exam_name.strip()
-                        st.session_state.exam_year = exam_year
-                        
-                        # Initialize if new exam
-                        if exam_key not in st.session_state.exam_data:
-                            st.session_state.exam_data[exam_key] = {
-                                'io_allocations': [],
-                                'ey_allocations': []
-                            }
-                            st.success(f"🎉 New exam '{exam_key}' created!")
-                        else:
-                            # Load existing allocations
-                            exam_data = st.session_state.exam_data[exam_key]
-                            if isinstance(exam_data, dict):
-                                st.session_state.allocation = exam_data.get('io_allocations', [])
-                                st.session_state.ey_allocation = exam_data.get('ey_allocations', [])
-                            else:
-                                st.session_state.allocation = exam_data
-                                st.session_state.ey_allocation = []
-                            
-                            st.success(f"📂 Exam '{exam_key}' loaded!")
-                        
-                        save_all_data()
-                        st.rerun()
+        exam_name = st.text_input("Exam Name:", placeholder="e.g., Combined Graduate Level Examination")
+        
+        current_year = datetime.now().year
+        year_options = [str(y) for y in range(current_year - 5, current_year + 3)]
+        exam_year = st.selectbox("Exam Year:", year_options, index=0)
+        
+        if st.button("✅ Create/Update Exam", use_container_width=True):
+            if exam_name.strip():
+                exam_key = f"{exam_name.strip()} - {exam_year}"
+                
+                st.session_state.current_exam_key = exam_key
+                st.session_state.exam_name = exam_name.strip()
+                st.session_state.exam_year = exam_year
+                
+                if exam_key not in st.session_state.exam_data:
+                    st.session_state.exam_data[exam_key] = {
+                        'io_allocations': [],
+                        'ey_allocations': []
+                    }
+                    st.success(f"🎉 New exam '{exam_key}' created!")
+                else:
+                    exam_data = st.session_state.exam_data[exam_key]
+                    if isinstance(exam_data, dict):
+                        st.session_state.allocation = exam_data.get('io_allocations', [])
+                        st.session_state.ey_allocation = exam_data.get('ey_allocations', [])
                     else:
-                        st.error("Please enter an exam name")
-            
-            with col_b:
-                if st.button("🔄 Load Default Data", use_container_width=True):
-                    load_default_master_data()
+                        st.session_state.allocation = exam_data
+                        st.session_state.ey_allocation = []
+                    
+                    st.success(f"📂 Exam '{exam_key}' loaded!")
+                
+                save_all_data()
+                st.rerun()
+            else:
+                st.error("Please enter an exam name")
     
     with col2:
-        # Select Existing Exam
         st.markdown("### 📂 Select Existing Exam")
         
         exams = sorted(st.session_state.exam_data.keys())
         if exams:
-            selected_exam = st.selectbox("Choose Exam:", 
-                                       exams,
-                                       index=exams.index(st.session_state.current_exam_key) 
-                                       if st.session_state.current_exam_key in exams else 0)
+            selected_exam = st.selectbox("Choose Exam:", exams, index=0)
             
             if st.button("📥 Load Selected Exam", use_container_width=True):
                 st.session_state.current_exam_key = selected_exam
                 
-                # Load exam data
                 exam_data = st.session_state.exam_data[selected_exam]
                 if isinstance(exam_data, dict):
                     st.session_state.allocation = exam_data.get('io_allocations', [])
@@ -1788,140 +1416,18 @@ def show_exam_management():
                     st.session_state.allocation = exam_data
                     st.session_state.ey_allocation = []
                 
-                # Parse exam name and year
                 if " - " in selected_exam:
                     name, year = selected_exam.split(" - ", 1)
                     st.session_state.exam_name = name
                     st.session_state.exam_year = year
                 
-                st.success(f"✅ Exam '{selected_exam}' loaded successfully!")
+                st.success(f"✅ Exam loaded successfully!")
                 st.rerun()
-            
-            # Delete exam option
-            with st.expander("⚠️ Delete Exam", expanded=False):
-                st.warning("This action cannot be undone!")
-                if st.checkbox("I understand this will delete ALL data for this exam"):
-                    if st.button("🗑️ Delete Selected Exam", type="secondary"):
-                        # Create backup first
-                        backup_file = create_backup(f"pre_delete_{selected_exam}")
-                        
-                        # Delete exam
-                        del st.session_state.exam_data[selected_exam]
-                        
-                        # Clear if current exam
-                        if st.session_state.current_exam_key == selected_exam:
-                            st.session_state.allocation = []
-                            st.session_state.ey_allocation = []
-                            st.session_state.current_exam_key = ""
-                        
-                        save_all_data()
-                        
-                        st.success(f"✅ Exam deleted. Backup created: {backup_file.name if backup_file else 'N/A'}")
-                        st.rerun()
         else:
-            st.info("No exams available. Create a new exam first.")
-    
-    st.markdown("---")
-    
-    # Backup & Restore Section
-    st.markdown("### 💾 Backup & Restore System")
-    
-    col3, col4 = st.columns(2)
-    
-    with col3:
-        st.markdown("#### Create Backup")
-        backup_desc = st.text_input("Backup Description (Optional):")
-        
-        if st.button("🔒 Create System Backup", use_container_width=True):
-            backup_file = create_backup(backup_desc)
-            if backup_file:
-                st.success(f"✅ Backup created: {backup_file.name}")
-            else:
-                st.error("❌ Failed to create backup")
-    
-    with col4:
-        st.markdown("#### Restore Backup")
-        
-        # List available backups
-        backup_files = list(BACKUP_DIR.glob("*.json"))
-        if backup_files:
-            backup_options = [f"{f.name} ({f.stat().st_size/1024:.1f} KB)" for f in sorted(backup_files, reverse=True)]
-            selected_backup = st.selectbox("Select Backup:", backup_options)
-            
-            if st.button("🔄 Restore from Backup", type="secondary", use_container_width=True):
-                # Extract filename
-                backup_filename = selected_backup.split(" (")[0]
-                backup_file = BACKUP_DIR / backup_filename
-                
-                if st.checkbox("Confirm restore (this will overwrite current data)"):
-                    if restore_from_backup(backup_file):
-                        st.success("✅ Backup restored successfully!")
-                        st.rerun()
-                    else:
-                        st.error("❌ Failed to restore backup")
-        else:
-            st.info("No backup files available")
-    
-    # Data Management
-    st.markdown("---")
-    st.markdown("### 🗃️ Data Management")
-    
-    col5, col6, col7 = st.columns(3)
-    
-    with col5:
-        if st.button("📤 Export All Data", use_container_width=True):
-            if st.session_state.exam_data:
-                # Create comprehensive export
-                export_data = {
-                    'exam_data': st.session_state.exam_data,
-                    'allocation_references': st.session_state.allocation_references,
-                    'remuneration_rates': st.session_state.remuneration_rates,
-                    'deleted_records': st.session_state.deleted_records,
-                    'export_timestamp': datetime.now().isoformat()
-                }
-                
-                # Convert to JSON for download
-                json_str = json.dumps(export_data, indent=4, default=str)
-                st.download_button(
-                    label="⬇️ Download JSON Export",
-                    data=json_str,
-                    file_name=f"ssc_export_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
-                    mime="application/json",
-                    use_container_width=True
-                )
-            else:
-                st.warning("No data to export")
-    
-    with col6:
-        if st.button("🧹 Clear All Data", type="secondary", use_container_width=True):
-            st.warning("⚠️ This will delete ALL data including backups!")
-            if st.checkbox("I confirm I want to delete ALL data"):
-                # Clear all data
-                st.session_state.exam_data = {}
-                st.session_state.allocation = []
-                st.session_state.ey_allocation = []
-                st.session_state.allocation_references = {}
-                st.session_state.deleted_records = []
-                st.session_state.current_exam_key = ""
-                
-                # Delete files
-                for file in [DATA_FILE, REFERENCE_FILE, DELETED_RECORDS_FILE, CONFIG_FILE]:
-                    if file.exists():
-                        file.unlink()
-                
-                # Delete backups
-                for backup_file in BACKUP_DIR.glob("*.json"):
-                    backup_file.unlink()
-                
-                st.success("✅ All data cleared successfully!")
-                st.rerun()
-    
-    with col7:
-        if st.button("📊 View References", use_container_width=True):
-            show_allocation_references()
+            st.info("No exams available")
 
 # ============================================================================
-# CENTRE COORDINATOR MODULE - FIXED
+# CENTRE COORDINATOR MODULE - WITH ENHANCED DATE SELECTION
 # ============================================================================
 
 def show_centre_coordinator():
@@ -1930,33 +1436,16 @@ def show_centre_coordinator():
         <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #4169e1 0%, #6ca0dc 100%); 
                  color: white; border-radius: 10px; margin-bottom: 30px;'>
             <h1>👨‍💼 CENTRE COORDINATOR ALLOCATION</h1>
-            <p>Allocate Centre Coordinators and Flying Squad Personnel</p>
+            <p>Enhanced Date Selection System</p>
         </div>
     """, unsafe_allow_html=True)
     
     # Check if exam is selected
     if not st.session_state.current_exam_key:
-        st.error("⚠️ Please select or create an exam first from Exam Management")
+        st.error("⚠️ Please select or create an exam first")
         return
     
-    # Mode selection
-    col_mode1, col_mode2 = st.columns(2)
-    with col_mode1:
-        st.session_state.mock_test_mode = st.checkbox("🎭 Mock Test Allocation Mode", 
-                                                     value=st.session_state.mock_test_mode,
-                                                     help="Enable for mock test allocations")
-    
-    with col_mode2:
-        if st.checkbox("👁️ Switch to EY Personnel", 
-                      value=st.session_state.ey_allocation_mode,
-                      help="Switch to EY Personnel allocation"):
-            st.session_state.ey_allocation_mode = True
-            st.session_state.menu = "ey"
-            st.rerun()
-        else:
-            st.session_state.ey_allocation_mode = False
-    
-    # Master Data Loading Section
+    # Master Data Loading
     st.markdown("### 📁 Master Data Management")
     
     col_data1, col_data2, col_data3 = st.columns(3)
@@ -1969,15 +1458,9 @@ def show_centre_coordinator():
         if st.button("📤 Load Venue List", use_container_width=True):
             st.session_state.show_venue_upload = True
     
-    with col_data3:
-        if st.button("📊 View Current Data", use_container_width=True):
-            show_current_data_preview()
-    
-    # Show file uploaders if triggered
+    # Show file uploaders
     if st.session_state.show_io_upload:
-        uploaded_io = st.file_uploader("Upload Centre Coordinator Master (Excel)", 
-                                      type=['xlsx', 'xls'],
-                                      key="io_master_upload")
+        uploaded_io = st.file_uploader("Upload Centre Coordinator Master (Excel)", type=['xlsx', 'xls'], key="io_master_upload")
         if uploaded_io:
             try:
                 st.session_state.io_df = pd.read_excel(uploaded_io)
@@ -1996,9 +1479,7 @@ def show_centre_coordinator():
                 st.error(f"❌ Error: {str(e)}")
     
     if st.session_state.show_venue_upload:
-        uploaded_venue = st.file_uploader("Upload Venue List (Excel)", 
-                                         type=['xlsx', 'xls'],
-                                         key="venue_upload")
+        uploaded_venue = st.file_uploader("Upload Venue List (Excel)", type=['xlsx', 'xls'], key="venue_upload")
         if uploaded_venue:
             try:
                 st.session_state.venue_df = pd.read_excel(uploaded_venue)
@@ -2010,23 +1491,18 @@ def show_centre_coordinator():
                 if missing_cols:
                     st.error(f"❌ Missing columns: {', '.join(missing_cols)}")
                 else:
-                    # Process dates - ensure they're in proper format
                     if 'DATE' in st.session_state.venue_df.columns:
                         st.session_state.venue_df['DATE'] = pd.to_datetime(
                             st.session_state.venue_df['DATE'], errors='coerce'
                         ).dt.strftime('%d-%m-%Y')
                     
-                    # Clean SHIFT column - ensure it's string and has no NaN
                     if 'SHIFT' in st.session_state.venue_df.columns:
                         st.session_state.venue_df['SHIFT'] = st.session_state.venue_df['SHIFT'].astype(str).str.strip()
-                        # Replace any 'nan' strings with empty string
                         st.session_state.venue_df['SHIFT'] = st.session_state.venue_df['SHIFT'].replace('nan', '')
                     
-                    # Clean VENUE column
                     if 'VENUE' in st.session_state.venue_df.columns:
                         st.session_state.venue_df['VENUE'] = st.session_state.venue_df['VENUE'].astype(str).str.strip()
                     
-                    # Remove any rows with empty VENUE or DATE
                     st.session_state.venue_df = st.session_state.venue_df[
                         (st.session_state.venue_df['VENUE'].notna()) & 
                         (st.session_state.venue_df['VENUE'] != '') &
@@ -2039,9 +1515,8 @@ def show_centre_coordinator():
                     st.session_state.show_venue_upload = False
             except Exception as e:
                 st.error(f"❌ Error: {str(e)}")
-                st.error("Please ensure your Excel file has the correct format with VENUE, DATE, and SHIFT columns.")
     
-    # Check if we have required data
+    # Check required data
     if not st.session_state.venue_master_loaded:
         st.warning("⚠️ Please load venue list first")
         return
@@ -2056,156 +1531,93 @@ def show_centre_coordinator():
     col_param1, col_param2 = st.columns(2)
     
     with col_param1:
-        # Venue selection
-        venues = sorted(st.session_state.venue_df['VENUE'].dropna().unique())
-        selected_venue = st.selectbox("Select Venue:", 
-                                     venues,
-                                     key="venue_select",
-                                     index=0 if len(venues) == 0 else (
-                                         venues.index(st.session_state.selected_venue) 
-                                         if st.session_state.selected_venue in venues else 0
-                                     ))
-        
-        if selected_venue != st.session_state.selected_venue:
-            st.session_state.selected_venue = selected_venue
-            st.rerun()
-    
-    with col_param2:
         # Role selection
-        role = st.selectbox("Select Role:", 
-                           ["Centre Coordinator", "Flying Squad"],
-                           key="role_select",
-                           index=0 if st.session_state.selected_role == "Centre Coordinator" else 1)
-        
-        if role != st.session_state.selected_role:
-            st.session_state.selected_role = role
-            st.rerun()
+        role = st.selectbox("Select Role:", ["Centre Coordinator", "Flying Squad"], key="role_select")
+        st.session_state.selected_role = role
     
-    # Date and Shift Selection
-    st.markdown("### 📅 Date & Shift Selection")
-    
+    # Enhanced Date Selection
     if st.session_state.mock_test_mode:
-        # Mock test date entry
-        col_date1, col_date2 = st.columns(2)
-        with col_date1:
-            mock_date = st.date_input("Mock Test Date:", 
-                                     value=datetime.now().date(),
-                                     key="mock_date")
-        with col_date2:
-            mock_shift = st.selectbox("Shift:", 
-                                     ["Morning", "Afternoon", "Evening"],
-                                     key="mock_shift")
+        st.info("🎭 **Mock Test Mode Active** - Enter mock test dates manually")
+    
+    # Use enhanced date selection system
+    selected_date_shifts = create_enhanced_date_selection_grid("IO")
+    
+    # Display selection summary
+    if selected_date_shifts:
+        # Group by date for better display
+        date_groups = {}
+        for ds in selected_date_shifts:
+            date_key = ds['date']
+            if date_key not in date_groups:
+                date_groups[date_key] = []
+            shift_info = f"{ds['shift']}{' (Mock)' if ds['is_mock'] else ''}"
+            if ds['venue'] not in [v for v, _ in date_groups[date_key]]:
+                date_groups[date_key].append((ds['venue'], shift_info))
         
-        if st.button("➕ Add Mock Test Date", key="add_mock_date"):
-            date_info = {
-                'date': mock_date.strftime("%d-%m-%Y"),
-                'shift': mock_shift,
-                'is_mock': True
-            }
-            if date_info not in st.session_state.selected_dates:
-                st.session_state.selected_dates.append(date_info)
-                st.success(f"Added {date_info['date']} ({mock_shift})")
+        st.success(f"✅ Selected {len(selected_date_shifts)} date-shift combination(s)")
+        
+        with st.expander("📋 View Selection Details"):
+            for date, venues in sorted(date_groups.items()):
+                st.write(f"**{date}:**")
+                for venue, shift in venues:
+                    st.write(f"  - {venue}: {shift}")
     else:
-        # Normal date selection from venue data
-        venue_data = st.session_state.venue_df[
-            st.session_state.venue_df['VENUE'] == selected_venue
-        ]
-        
-        if not venue_data.empty:
-            # Use enhanced date selector
-            selected_date_shifts = create_date_selector(venue_data, selected_venue)
-            
-            if selected_date_shifts:
-                st.session_state.selected_dates = selected_date_shifts
-                st.info(f"✅ Selected {len(selected_date_shifts)} date-shift combinations")
-            else:
-                st.info("No dates selected. Please select at least one date-shift combination.")
-        else:
-            st.warning(f"No data found for venue: {selected_venue}")
+        st.info("Select dates above to continue")
     
     # IO Selection
     st.markdown("### 👥 Centre Coordinator Selection")
     
-    # Filter IOs based on venue
-    if selected_venue and not st.session_state.mock_test_mode:
-        if not venue_data.empty:
-            venue_row = venue_data.iloc[0]
-            centre_code = str(venue_row['CENTRE_CODE']).zfill(4) if 'CENTRE_CODE' in venue_row else ''
-            
-            if centre_code and 'CENTRE_CODE' in st.session_state.io_df.columns:
-                filtered_io = st.session_state.io_df[
-                    st.session_state.io_df['CENTRE_CODE'].astype(str).str.zfill(4).str.startswith(centre_code[:4])
-                ]
-            else:
-                filtered_io = st.session_state.io_df
-        else:
-            filtered_io = st.session_state.io_df
-    else:
-        filtered_io = st.session_state.io_df
+    # Filter IOs
+    filtered_io = st.session_state.io_df.copy()
     
     # Search functionality
-    search_term = st.text_input("🔍 Search Centre Coordinator:", 
-                               placeholder="Search by name or area...")
+    search_term = st.text_input("🔍 Search Centre Coordinator:", placeholder="Search by name or area...")
     
     if search_term:
         filtered_io = filtered_io[
             (filtered_io['NAME'].str.lower().str.contains(search_term.lower())) |
-            (filtered_io['AREA'].str.lower().str.contains(search_term.lower())) |
-            (filtered_io['DESIGNATION'].str.lower().str.contains(search_term.lower()))
+            (filtered_io['AREA'].str.lower().str.contains(search_term.lower()))
         ]
     
-    if not filtered_io.empty:
+    if not filtered_io.empty and selected_date_shifts:
         st.write(f"**Available Centre Coordinators ({len(filtered_io)} found):**")
         
-        # Display in a scrollable container
-        io_container = st.container()
-        
-        with io_container:
-            for idx, row in filtered_io.iterrows():
-                name = row.get('NAME', 'N/A')
-                area = row.get('AREA', 'N/A')
-                designation = row.get('DESIGNATION', 'N/A')
-                centre_code = row.get('CENTRE_CODE', 'N/A')
+        # Display IOs
+        for idx, row in filtered_io.iterrows():
+            name = row.get('NAME', 'N/A')
+            area = row.get('AREA', 'N/A')
+            designation = row.get('DESIGNATION', 'N/A')
+            
+            # Check existing allocations
+            existing_allocations = [
+                a for a in st.session_state.allocation 
+                if a['IO Name'] == name and a.get('Exam') == st.session_state.current_exam_key
+            ]
+            
+            with st.expander(f"👤 {name} ({area})", expanded=False):
+                col_info1, col_info2 = st.columns(2)
                 
-                # Check existing allocations
-                existing_allocations = [
-                    a for a in st.session_state.allocation 
-                    if a['IO Name'] == name and a.get('Exam') == st.session_state.current_exam_key
-                ]
+                with col_info1:
+                    st.write(f"**Designation:** {designation}")
+                    st.write(f"**Area:** {area}")
                 
-                # Create a card for each IO
-                with st.expander(f"👤 {name} ({area})", expanded=False):
-                    col_info1, col_info2 = st.columns(2)
-                    
-                    with col_info1:
-                        st.write(f"**Designation:** {designation}")
-                        st.write(f"**Centre Code:** {centre_code}")
-                    
-                    with col_info2:
-                        st.write(f"**Mobile:** {row.get('MOBILE', 'N/A')}")
-                        st.write(f"**Email:** {row.get('EMAIL', 'N/A')}")
-                    
-                    # Show existing allocations
-                    if existing_allocations:
-                        st.warning(f"⚠️ Already allocated to {len(existing_allocations)} date(s)")
-                        for alloc in existing_allocations[-3:]:  # Show last 3
-                            st.write(f"- {alloc['Date']} {alloc['Shift']} at {alloc['Venue']}")
-                    
-                    # Allocation button
-                    if st.session_state.selected_dates:
-                        if st.button(f"✅ Allocate {name}", key=f"alloc_btn_{idx}"):
-                            # Set allocation state
-                            st.session_state.current_allocation_person = name
-                            st.session_state.current_allocation_area = area
-                            st.session_state.current_allocation_role = role
-                            st.session_state.current_allocation_type = "IO"
-                            st.rerun()
-                    else:
-                        st.info("Select dates above to enable allocation")
+                with col_info2:
+                    st.write(f"**Mobile:** {row.get('MOBILE', 'N/A')}")
+                    st.write(f"**Email:** {row.get('EMAIL', 'N/A')}")
+                
+                # Allocation button
+                if st.button(f"✅ Allocate {name}", key=f"alloc_btn_{idx}", use_container_width=True):
+                    st.session_state.current_allocation_person = name
+                    st.session_state.current_allocation_area = area
+                    st.session_state.current_allocation_role = role
+                    st.session_state.current_allocation_type = "IO"
+                    st.rerun()
+    elif not selected_date_shifts:
+        st.info("Select dates above to enable allocation")
     else:
-        st.warning("No Centre Coordinators found matching the criteria")
+        st.warning("No Centre Coordinators found")
     
-    # Handle allocation after reference selection
+    # Handle allocation
     if st.session_state.current_allocation_person and st.session_state.current_allocation_type == "IO":
         # Show reference selection
         st.markdown(f"### 📋 Reference for {st.session_state.current_allocation_person}")
@@ -2213,43 +1625,13 @@ def show_centre_coordinator():
         
         if ref_data is not None:
             # Perform allocation
-            allocation_count = 0
-            conflicts = []
-            
-            for date_info in st.session_state.selected_dates:
-                # Check for conflicts
-                conflict, message = check_allocation_conflict(
-                    st.session_state.current_allocation_person, 
-                    date_info['date'], 
-                    date_info['shift'], 
-                    selected_venue, 
-                    st.session_state.current_allocation_role, 
-                    st.session_state.current_allocation_type
-                )
-                
-                if conflict:
-                    conflicts.append(message)
-                    continue
-                
-                # Create allocation
-                allocation = {
-                    'Sl. No.': len(st.session_state.allocation) + allocation_count + 1,
-                    'Venue': selected_venue,
-                    'Date': date_info['date'],
-                    'Shift': date_info['shift'],
-                    'IO Name': st.session_state.current_allocation_person,
-                    'Area': st.session_state.current_allocation_area,
-                    'Role': st.session_state.current_allocation_role,
-                    'Mock Test': date_info['is_mock'],
-                    'Exam': st.session_state.current_exam_key,
-                    'Order No.': ref_data['order_no'],
-                    'Page No.': ref_data['page_no'],
-                    'Reference Remarks': ref_data.get('remarks', ''),
-                    'Timestamp': datetime.now().isoformat()
-                }
-                
-                st.session_state.allocation.append(allocation)
-                allocation_count += 1
+            allocation_count, conflicts, warnings = perform_allocation_with_conflict_check(
+                st.session_state.current_allocation_person,
+                selected_date_shifts,
+                st.session_state.current_allocation_role,
+                "IO",
+                ref_data
+            )
             
             # Update exam data
             exam_key = st.session_state.current_exam_key
@@ -2269,12 +1651,23 @@ def show_centre_coordinator():
             
             if allocation_count > 0:
                 success_msg = f"✅ Allocated {st.session_state.current_allocation_person} to {allocation_count} date-shift combination(s)"
+                
+                if warnings:
+                    success_msg += f"\n\n⚠️ {len(warnings)} warning(s) confirmed"
+                
                 if conflicts:
-                    success_msg += f"\n\n⚠️ {len(conflicts)} conflict(s) prevented allocation"
+                    conflict_details = "\n".join([c['message'] for c in conflicts[:3]])
+                    if len(conflicts) > 3:
+                        conflict_details += f"\n... and {len(conflicts) - 3} more"
+                    st.error(f"❌ {len(conflicts)} conflict(s) prevented allocation:\n\n{conflict_details}")
+                
                 st.success(success_msg)
                 st.rerun()
             else:
-                st.error("❌ No allocations made due to conflicts")
+                if conflicts:
+                    st.error(f"❌ No allocations made due to {len(conflicts)} conflict(s)")
+                else:
+                    st.error("❌ No allocations made")
     
     # Current Allocations Display
     if st.session_state.allocation:
@@ -2287,46 +1680,14 @@ def show_centre_coordinator():
         current_allocations = alloc_df[alloc_df['Exam'] == st.session_state.current_exam_key]
         
         if not current_allocations.empty:
-            # Display table
             st.dataframe(
                 current_allocations[['Sl. No.', 'IO Name', 'Venue', 'Date', 'Shift', 'Role', 'Mock Test']],
                 use_container_width=True,
                 hide_index=True
             )
-            
-            # Quick actions
-            col_act1, col_act2, col_act3 = st.columns(3)
-            
-            with col_act1:
-                if st.button("📤 Export Allocations", use_container_width=True):
-                    csv = current_allocations.to_csv(index=False)
-                    st.download_button(
-                        label="⬇️ Download CSV",
-                        data=csv,
-                        file_name=f"io_allocations_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                        mime="text/csv",
-                        use_container_width=True
-                    )
-            
-            with col_act2:
-                if st.button("🗑️ Clear All Allocations", type="secondary", use_container_width=True):
-                    if st.checkbox("Confirm clear all allocations for this exam"):
-                        st.session_state.allocation = []
-                        exam_key = st.session_state.current_exam_key
-                        if exam_key in st.session_state.exam_data:
-                            st.session_state.exam_data[exam_key]['io_allocations'] = []
-                        save_all_data()
-                        st.success("Allocations cleared!")
-                        st.rerun()
-            
-            with col_act3:
-                if st.button("📊 Generate Report", use_container_width=True):
-                    generate_io_report()
-        else:
-            st.info("No allocations for current exam")
 
 # ============================================================================
-# EY PERSONNEL MODULE - FIXED
+# EY PERSONNEL MODULE - WITH ENHANCED DATE SELECTION
 # ============================================================================
 
 def show_ey_personnel():
@@ -2335,48 +1696,37 @@ def show_ey_personnel():
         <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #9370db 0%, #8a2be2 100%); 
                  color: white; border-radius: 10px; margin-bottom: 30px;'>
             <h1>👁️ EY PERSONNEL ALLOCATION</h1>
-            <p>Allocate External Yard/Examination Personnel</p>
+            <p>Multi-Venue Date Selection System</p>
         </div>
     """, unsafe_allow_html=True)
     
     # Check if exam is selected
     if not st.session_state.current_exam_key:
-        st.error("⚠️ Please select or create an exam first from Exam Management")
+        st.error("⚠️ Please select or create an exam first")
         return
     
     # Mode switch
     col_mode1, col_mode2 = st.columns(2)
     with col_mode1:
-        if st.checkbox("👨‍💼 Switch to Centre Coordinator", 
-                      help="Switch to Centre Coordinator allocation"):
+        if st.checkbox("👨‍💼 Switch to Centre Coordinator"):
             st.session_state.menu = "io"
             st.rerun()
     
     # Master Data Loading
     st.markdown("### 📁 EY Master Data")
     
-    col_ey1, col_ey2 = st.columns(2)
+    if st.button("📤 Load EY Master", use_container_width=True):
+        st.session_state.show_ey_upload = True
     
-    with col_ey1:
-        if st.button("📤 Load EY Master", use_container_width=True):
-            st.session_state.show_ey_upload = True
+    # EY Rate Setting
+    ey_rate = st.number_input("💰 EY Rate per Day (₹):", value=st.session_state.remuneration_rates['ey_personnel'], min_value=0, step=100)
+    if ey_rate != st.session_state.remuneration_rates['ey_personnel']:
+        st.session_state.remuneration_rates['ey_personnel'] = ey_rate
+        save_all_data()
     
-    with col_ey2:
-        # EY Rate Setting
-        ey_rate = st.number_input("💰 EY Rate per Day (₹):", 
-                                 value=st.session_state.remuneration_rates['ey_personnel'],
-                                 min_value=0, step=100)
-        
-        if ey_rate != st.session_state.remuneration_rates['ey_personnel']:
-            st.session_state.remuneration_rates['ey_personnel'] = ey_rate
-            save_all_data()
-            st.success("Rate updated!")
-    
-    # Show EY uploader if triggered
+    # Show EY uploader
     if st.session_state.show_ey_upload:
-        uploaded_ey = st.file_uploader("Upload EY Personnel Master (Excel)", 
-                                      type=['xlsx', 'xls'],
-                                      key="ey_master_upload")
+        uploaded_ey = st.file_uploader("Upload EY Personnel Master (Excel)", type=['xlsx', 'xls'], key="ey_master_upload")
         if uploaded_ey:
             try:
                 st.session_state.ey_df = pd.read_excel(uploaded_ey)
@@ -2385,7 +1735,6 @@ def show_ey_personnel():
                 if 'NAME' not in st.session_state.ey_df.columns:
                     st.error("❌ Missing required column: NAME")
                 else:
-                    # Ensure optional columns exist
                     optional_cols = ["MOBILE", "EMAIL", "ID_NUMBER", "DESIGNATION", "DEPARTMENT"]
                     for col in optional_cols:
                         if col not in st.session_state.ey_df.columns:
@@ -2406,85 +1755,42 @@ def show_ey_personnel():
         st.warning("⚠️ Please load venue list from Centre Coordinator section")
         return
     
-    # Venue Selection
-    st.markdown("### 🎯 Venue Selection")
+    # Enhanced Date Selection for EY Mode
+    selected_date_shifts = create_enhanced_date_selection_grid("EY")
     
-    venues = sorted(st.session_state.venue_df['VENUE'].dropna().unique())
-    selected_venues = st.multiselect("Select Venues for EY Allocation:", 
-                                    venues,
-                                    default=st.session_state.selected_venue if st.session_state.selected_venue in venues else None)
-    
-    if not selected_venues:
-        st.info("Select at least one venue to continue")
-        return
-    
-    # Date Selection
-    st.markdown("### 📅 Date Selection")
-    
-    # Get all dates from selected venues
-    all_dates = []
-    for venue in selected_venues:
-        venue_data = st.session_state.venue_df[st.session_state.venue_df['VENUE'] == venue]
-        if not venue_data.empty:
-            for _, row in venue_data.iterrows():
-                all_dates.append({
-                    'venue': venue,
-                    'date': row['DATE'],
-                    'shift': row['SHIFT']
-                })
-    
-    if not all_dates:
-        st.warning("No dates available for selected venues")
-        return
-    
-    # Group dates by venue for selection
-    selected_date_info = []
-    
-    for venue in selected_venues:
-        venue_dates = [d for d in all_dates if d['venue'] == venue]
-        if venue_dates:
-            with st.expander(f"📅 {venue}", expanded=False):
-                # Get unique dates for this venue
-                unique_dates = sorted(set(d['date'] for d in venue_dates))
-                
-                for date_str in unique_dates:
-                    # Get all shifts for this date
-                    date_shifts = [d['shift'] for d in venue_dates if d['date'] == date_str]
-                    # Filter out empty or NaN shifts
-                    date_shifts = [shift for shift in date_shifts if pd.notna(shift) and str(shift) != '']
-                    shift_str = ", ".join(sorted(set(date_shifts)))
-                    
-                    if shift_str:  # Only show if there are valid shifts
-                        # Date selection checkbox
-                        selected = st.checkbox(f"{date_str} ({shift_str})", 
-                                             key=f"ey_date_{venue}_{date_str}")
-                        
-                        if selected:
-                            # Add all shifts for this date
-                            for shift in date_shifts:
-                                selected_date_info.append({
-                                    'venue': venue,
-                                    'date': date_str,
-                                    'shift': shift,
-                                    'is_mock': False
-                                })
-    
-    if not selected_date_info:
-        st.info("Select dates to allocate EY personnel")
+    if selected_date_shifts:
+        # Display selection summary
+        st.success(f"✅ Selected {len(selected_date_shifts)} date-shift-venue combination(s)")
+        
+        # Group by venue for better display
+        venue_groups = {}
+        for ds in selected_date_shifts:
+            venue = ds['venue']
+            if venue not in venue_groups:
+                venue_groups[venue] = []
+            date_shift = f"{ds['date']} ({ds['shift']})"
+            if date_shift not in venue_groups[venue]:
+                venue_groups[venue].append(date_shift)
+        
+        with st.expander("📋 View Allocation Plan"):
+            for venue, dates in sorted(venue_groups.items()):
+                st.write(f"**{venue}:**")
+                for date_shift in sorted(dates):
+                    st.write(f"  - {date_shift}")
+    else:
+        st.info("Select dates above to continue")
         return
     
     # EY Personnel Selection
     st.markdown("### 👥 EY Personnel Selection")
     
     # Search functionality
-    search_term = st.text_input("🔍 Search EY Personnel:", 
-                               placeholder="Search by name, department, or ID...")
+    search_term = st.text_input("🔍 Search EY Personnel:", placeholder="Search by name, department, or ID...")
     
     if search_term:
         filtered_ey = st.session_state.ey_df[
             (st.session_state.ey_df['NAME'].str.lower().str.contains(search_term.lower())) |
-            (st.session_state.ey_df['DEPARTMENT'].str.lower().str.contains(search_term.lower())) |
-            (st.session_state.ey_df['ID_NUMBER'].str.lower().str.contains(search_term.lower()))
+            (st.session_state.ey_df['DEPARTMENT'].str.lower().str.contains(search_term.lower()))
         ]
     else:
         filtered_ey = st.session_state.ey_df
@@ -2493,12 +1799,10 @@ def show_ey_personnel():
         st.write(f"**Available EY Personnel ({len(filtered_ey)} found):**")
         
         # Display EY personnel
-        selected_ey = st.selectbox("Select EY Personnel:", 
-                                  filtered_ey['NAME'].tolist(),
-                                  key="ey_person_select")
+        selected_ey = st.selectbox("Select EY Personnel:", filtered_ey['NAME'].tolist(), key="ey_person_select")
         
         if selected_ey:
-            # Show details of selected EY personnel
+            # Show details
             ey_row = filtered_ey[filtered_ey['NAME'] == selected_ey].iloc[0]
             
             col_details1, col_details2 = st.columns(2)
@@ -2510,17 +1814,15 @@ def show_ey_personnel():
                 st.write(f"**Mobile:** {ey_row.get('MOBILE', 'N/A')}")
             
             # Allocation button
-            if st.button(f"✅ Allocate {selected_ey} to Selected Dates", 
-                        use_container_width=True):
-                # Set allocation state
+            if st.button(f"✅ Allocate {selected_ey} to Selected Dates", use_container_width=True):
                 st.session_state.current_allocation_person = selected_ey
                 st.session_state.current_allocation_ey_row = ey_row.to_dict()
                 st.session_state.current_allocation_type = "EY"
                 st.rerun()
     else:
-        st.warning("No EY personnel found matching search criteria")
+        st.warning("No EY personnel found")
     
-    # Handle EY allocation after reference selection
+    # Handle EY allocation
     if st.session_state.current_allocation_person and st.session_state.current_allocation_type == "EY":
         # Show reference selection
         st.markdown(f"### 📋 Reference for {st.session_state.current_allocation_person}")
@@ -2528,48 +1830,13 @@ def show_ey_personnel():
         
         if ref_data is not None:
             # Perform allocation
-            allocation_count = 0
-            conflicts = []
-            ey_row = st.session_state.current_allocation_ey_row
-            
-            for date_info in selected_date_info:
-                # Check for conflicts
-                conflict, message = check_allocation_conflict(
-                    st.session_state.current_allocation_person, 
-                    date_info['date'], 
-                    date_info['shift'],
-                    date_info['venue'], 
-                    "", 
-                    "EY"
-                )
-                
-                if conflict:
-                    conflicts.append(message)
-                    continue
-                
-                # Create allocation
-                allocation = {
-                    'Sl. No.': len(st.session_state.ey_allocation) + allocation_count + 1,
-                    'Venue': date_info['venue'],
-                    'Date': date_info['date'],
-                    'Shift': date_info['shift'],
-                    'EY Personnel': st.session_state.current_allocation_person,
-                    'Mobile': ey_row.get('MOBILE', ''),
-                    'Email': ey_row.get('EMAIL', ''),
-                    'ID Number': ey_row.get('ID_NUMBER', ''),
-                    'Designation': ey_row.get('DESIGNATION', ''),
-                    'Department': ey_row.get('DEPARTMENT', ''),
-                    'Mock Test': False,
-                    'Exam': st.session_state.current_exam_key,
-                    'Rate (₹)': st.session_state.remuneration_rates['ey_personnel'],
-                    'Order No.': ref_data['order_no'],
-                    'Page No.': ref_data['page_no'],
-                    'Reference Remarks': ref_data.get('remarks', ''),
-                    'Timestamp': datetime.now().isoformat()
-                }
-                
-                st.session_state.ey_allocation.append(allocation)
-                allocation_count += 1
+            allocation_count, conflicts, warnings = perform_allocation_with_conflict_check(
+                st.session_state.current_allocation_person,
+                selected_date_shifts,
+                "",
+                "EY",
+                ref_data
+            )
             
             # Update exam data
             exam_key = st.session_state.current_exam_key
@@ -2588,12 +1855,20 @@ def show_ey_personnel():
             
             if allocation_count > 0:
                 success_msg = f"✅ Allocated {st.session_state.current_allocation_person} to {allocation_count} date-shift combinations"
+                
                 if conflicts:
-                    success_msg += f"\n\n⚠️ {len(conflicts)} conflict(s) prevented allocation"
+                    conflict_details = "\n".join([c['message'] for c in conflicts[:3]])
+                    if len(conflicts) > 3:
+                        conflict_details += f"\n... and {len(conflicts) - 3} more"
+                    st.error(f"❌ {len(conflicts)} conflict(s) prevented allocation:\n\n{conflict_details}")
+                
                 st.success(success_msg)
                 st.rerun()
             else:
-                st.error("❌ No allocations made due to conflicts")
+                if conflicts:
+                    st.error(f"❌ No allocations made due to {len(conflicts)} conflict(s)")
+                else:
+                    st.error("❌ No allocations made")
     
     # Current EY Allocations
     if st.session_state.ey_allocation:
@@ -2611,64 +1886,27 @@ def show_ey_personnel():
                 use_container_width=True,
                 hide_index=True
             )
-            
-            # Summary statistics
-            unique_dates = current_ey['Date'].nunique()
-            total_cost = unique_dates * st.session_state.remuneration_rates['ey_personnel']
-            unique_personnel = current_ey['EY Personnel'].nunique()
-            
-            col_stat1, col_stat2 = st.columns(2)
-            with col_stat1:
-                st.metric("Total EY Personnel", unique_personnel)
-            with col_stat2:
-                st.metric("Estimated Cost", f"₹{total_cost:,}")
-            
-            # Export button
-            if st.button("📤 Export EY Allocations", use_container_width=True):
-                csv = current_ey.to_csv(index=False)
-                st.download_button(
-                    label="⬇️ Download CSV",
-                    data=csv,
-                    file_name=f"ey_allocations_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-        else:
-            st.info("No EY allocations for current exam")
 
 # ============================================================================
-# REPORTS MODULE - ENHANCED
+# REPORTS MODULE
 # ============================================================================
 
 def show_reports():
-    """Display reports and export interface"""
+    """Display reports interface"""
     st.markdown("""
         <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #ff8c00 0%, #ffa500 100%); 
                  color: white; border-radius: 10px; margin-bottom: 30px;'>
             <h1>📊 REPORTS & EXPORTS</h1>
-            <p>Generate Comprehensive Reports and Export Data</p>
         </div>
     """, unsafe_allow_html=True)
     
-    # Tab layout for different reports
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "📋 Allocation Reports", 
-        "💰 Remuneration Reports", 
-        "📚 Reference Reports",
-        "🗑️ Deleted Records"
-    ])
+    tab1, tab2 = st.tabs(["📋 Allocation Reports", "💰 Remuneration Reports"])
     
     with tab1:
         show_allocation_reports()
     
     with tab2:
         show_remuneration_reports()
-    
-    with tab3:
-        show_reference_reports()
-    
-    with tab4:
-        show_deleted_records()
 
 def show_allocation_reports():
     """Display allocation reports"""
@@ -2678,269 +1916,86 @@ def show_allocation_reports():
         st.info("No allocation data available")
         return
     
-    col_report1, col_report2 = st.columns(2)
+    if st.session_state.allocation:
+        alloc_df = pd.DataFrame(st.session_state.allocation)
+        
+        # Show summary
+        col_stat1, col_stat2, col_stat3 = st.columns(3)
+        with col_stat1:
+            st.metric("Total IO Allocations", len(alloc_df))
+        with col_stat2:
+            st.metric("Unique IOs", alloc_df['IO Name'].nunique())
+        with col_stat3:
+            st.metric("Total Days", alloc_df['Date'].nunique())
+        
+        # Show preview
+        with st.expander("Preview IO Allocations"):
+            st.dataframe(
+                alloc_df[['Sl. No.', 'IO Name', 'Venue', 'Date', 'Shift', 'Role', 'Mock Test']].head(10),
+                use_container_width=True,
+                hide_index=True
+            )
     
-    with col_report1:
-        st.markdown("#### 📊 Generate Allocation Report")
-        st.write("This report includes all allocation data with multiple sheets:")
-        st.markdown("""
-        - **IO Allocations:** Raw allocation data
-        - **EY Allocations:** EY personnel data
-        - **IO Summary:** Per-IO statistics
-        - **Venue-IO Shifts:** Venue-centric view
-        - **Venue-Role Summary:** Counts per venue
-        - **Date Summary:** Daily statistics
-        - **EY Summary:** EY personnel statistics
-        - **Deleted Records:** Audit trail
-        - **Rates:** Current remuneration rates
-        """)
+    if st.session_state.ey_allocation:
+        st.markdown("##### EY Allocations")
+        ey_df = pd.DataFrame(st.session_state.ey_allocation)
         
-        if st.button("📤 Generate Allocation Report", use_container_width=True):
-            excel_file = export_to_excel()
-            if excel_file:
-                st.download_button(
-                    label="⬇️ Download Allocation Report (Excel)",
-                    data=excel_file,
-                    file_name=f"allocation_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
-            else:
-                st.error("Failed to generate report")
-    
-    with col_report2:
-        st.markdown("#### 📈 View Data Preview")
+        col_ey1, col_ey2 = st.columns(2)
+        with col_ey1:
+            st.metric("Total EY Allocations", len(ey_df))
+        with col_ey2:
+            st.metric("Unique EY Personnel", ey_df['EY Personnel'].nunique())
         
-        if st.session_state.allocation:
-            alloc_df = pd.DataFrame(st.session_state.allocation)
-            
-            # Show summary statistics
-            col_stat1, col_stat2, col_stat3 = st.columns(3)
-            with col_stat1:
-                st.metric("Total IO Allocations", len(alloc_df))
-            with col_stat2:
-                st.metric("Unique IOs", alloc_df['IO Name'].nunique())
-            with col_stat3:
-                st.metric("Total Days", alloc_df['Date'].nunique())
-            
-            # Show preview
-            with st.expander("Preview IO Allocations"):
-                st.dataframe(
-                    alloc_df[['Sl. No.', 'IO Name', 'Venue', 'Date', 'Shift', 'Role', 'Mock Test']].head(10),
-                    use_container_width=True,
-                    hide_index=True
-                )
-        
-        if st.session_state.ey_allocation:
-            st.markdown("##### EY Allocations")
-            ey_df = pd.DataFrame(st.session_state.ey_allocation)
-            
-            col_ey1, col_ey2 = st.columns(2)
-            with col_ey1:
-                st.metric("Total EY Allocations", len(ey_df))
-            with col_ey2:
-                st.metric("Unique EY Personnel", ey_df['EY Personnel'].nunique())
-            
-            with st.expander("Preview EY Allocations"):
-                st.dataframe(
-                    ey_df[['Sl. No.', 'EY Personnel', 'Venue', 'Date', 'Shift', 'Rate (₹)']].head(10),
-                    use_container_width=True,
-                    hide_index=True
-                )
+        with st.expander("Preview EY Allocations"):
+            st.dataframe(
+                ey_df[['Sl. No.', 'EY Personnel', 'Venue', 'Date', 'Shift', 'Rate (₹)']].head(10),
+                use_container_width=True,
+                hide_index=True
+            )
 
 def show_remuneration_reports():
     """Display remuneration reports"""
     st.markdown("### 💰 Remuneration Reports")
     
     if not st.session_state.allocation and not st.session_state.ey_allocation:
-        st.info("No allocation data available for remuneration calculation")
+        st.info("No allocation data available")
         return
     
-    col_report1, col_report2 = st.columns(2)
-    
-    with col_report1:
-        st.markdown("#### 💸 Generate Remuneration Report")
-        st.write("This report includes detailed remuneration calculations:")
-        st.markdown("""
-        - **IO Detailed Report:** Per-day calculations
-        - **IO Summary:** Aggregated IO remuneration
-        - **EY Personnel Report:** EY per-day calculations
-        - **EY Summary:** Aggregated EY remuneration
-        - **Deleted Records:** Audit trail
-        - **Rates:** Current remuneration rates
-        """)
+    if st.session_state.allocation:
+        # Calculate IO remuneration
+        alloc_df = pd.DataFrame(st.session_state.allocation)
         
-        if st.button("💰 Generate Remuneration Report", use_container_width=True):
-            excel_file = export_remuneration_report()
-            if excel_file:
-                st.download_button(
-                    label="⬇️ Download Remuneration Report (Excel)",
-                    data=excel_file,
-                    file_name=f"remuneration_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True
-                )
+        total_io_amount = 0
+        for (io_name, date), group in alloc_df.groupby(['IO Name', 'Date']):
+            shifts = len(group)
+            is_mock = any(group['Mock Test'])
+            
+            if is_mock:
+                amount = st.session_state.remuneration_rates['mock_test']
             else:
-                st.error("Failed to generate report")
-    
-    with col_report2:
-        st.markdown("#### 📊 Remuneration Preview")
-        
-        if st.session_state.allocation:
-            # Calculate IO remuneration
-            alloc_df = pd.DataFrame(st.session_state.allocation)
-            
-            # Calculate total IO remuneration
-            total_io_amount = 0
-            for (io_name, date), group in alloc_df.groupby(['IO Name', 'Date']):
-                shifts = len(group)
-                is_mock = any(group['Mock Test'])
-                
-                if is_mock:
-                    amount = st.session_state.remuneration_rates['mock_test']
+                if shifts > 1:
+                    amount = st.session_state.remuneration_rates['multiple_shifts']
                 else:
-                    if shifts > 1:
-                        amount = st.session_state.remuneration_rates['multiple_shifts']
-                    else:
-                        amount = st.session_state.remuneration_rates['single_shift']
-                
-                total_io_amount += amount
+                    amount = st.session_state.remuneration_rates['single_shift']
             
-            col_rem1, col_rem2 = st.columns(2)
-            with col_rem1:
-                st.metric("Total IO Remuneration", f"₹{total_io_amount:,}")
-            
-            # Calculate EY remuneration
-            if st.session_state.ey_allocation:
-                ey_df = pd.DataFrame(st.session_state.ey_allocation)
-                total_ey_days = ey_df['Date'].nunique()
-                total_ey_amount = total_ey_days * st.session_state.remuneration_rates['ey_personnel']
-                
-                with col_rem2:
-                    st.metric("Total EY Remuneration", f"₹{total_ey_amount:,}")
-            
-            # Grand total
-            grand_total = total_io_amount + (total_ey_amount if 'total_ey_amount' in locals() else 0)
-            st.metric("Grand Total", f"₹{grand_total:,}", delta=f"₹{grand_total:,}")
-
-def show_reference_reports():
-    """Display allocation reference reports"""
-    st.markdown("### 📚 Allocation References")
-    
-    if not st.session_state.allocation_references:
-        st.info("No allocation references available")
-        return
-    
-    # Display references
-    ref_data = []
-    for exam_key, roles in st.session_state.allocation_references.items():
-        for role, ref in roles.items():
-            timestamp = ref.get('timestamp', '')
-            if timestamp:
-                try:
-                    timestamp = datetime.fromisoformat(timestamp).strftime("%d-%m-%Y %H:%M")
-                except:
-                    pass
-            
-            ref_data.append({
-                'Exam': exam_key,
-                'Role': role,
-                'Order No.': ref.get('order_no', ''),
-                'Page No.': ref.get('page_no', ''),
-                'Timestamp': timestamp,
-                'Remarks': ref.get('remarks', '')[:50] + '...' if len(ref.get('remarks', '')) > 50 else ref.get('remarks', '')
-            })
-    
-    if ref_data:
-        ref_df = pd.DataFrame(ref_data)
-        st.dataframe(ref_df, use_container_width=True)
+            total_io_amount += amount
         
-        # Export
-        if st.button("📤 Export References", use_container_width=True):
-            csv = ref_df.to_csv(index=False)
-            st.download_button(
-                label="⬇️ Download CSV",
-                data=csv,
-                file_name=f"allocation_references_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+        col_rem1, col_rem2 = st.columns(2)
+        with col_rem1:
+            st.metric("Total IO Remuneration", f"₹{total_io_amount:,}")
         
-        # Delete options
-        st.markdown("---")
-        st.markdown("#### 🗑️ Manage References")
-        
-        exams = list(st.session_state.allocation_references.keys())
-        if exams:
-            selected_exam = st.selectbox("Select Exam:", exams)
+        # Calculate EY remuneration
+        if st.session_state.ey_allocation:
+            ey_df = pd.DataFrame(st.session_state.ey_allocation)
+            total_ey_days = ey_df['Date'].nunique()
+            total_ey_amount = total_ey_days * st.session_state.remuneration_rates['ey_personnel']
             
-            if selected_exam and selected_exam in st.session_state.allocation_references:
-                roles = list(st.session_state.allocation_references[selected_exam].keys())
-                if roles:
-                    selected_role = st.selectbox("Select Role:", roles)
-                    
-                    if st.button("🗑️ Delete Selected Reference", type="secondary"):
-                        if st.checkbox(f"Confirm delete reference for {selected_role} in {selected_exam}"):
-                            del st.session_state.allocation_references[selected_exam][selected_role]
-                            
-                            # Remove exam if no references left
-                            if not st.session_state.allocation_references[selected_exam]:
-                                del st.session_state.allocation_references[selected_exam]
-                            
-                            save_all_data()
-                            st.success("Reference deleted!")
-                            st.rerun()
-
-def show_deleted_records():
-    """Display deleted records"""
-    st.markdown("### 🗑️ Deleted Records")
-    
-    if not st.session_state.deleted_records:
-        st.info("No deleted records available")
-        return
-    
-    deleted_df = pd.DataFrame(st.session_state.deleted_records)
-    
-    # Format timestamp
-    if 'Deletion Timestamp' in deleted_df.columns:
-        deleted_df['Deletion Timestamp'] = pd.to_datetime(
-            deleted_df['Deletion Timestamp'], errors='coerce'
-        ).dt.strftime('%d-%m-%Y %H:%M')
-    
-    st.dataframe(deleted_df, use_container_width=True)
-    
-    # Statistics
-    total_deleted = len(deleted_df)
-    io_deleted = len([r for r in st.session_state.deleted_records if r.get('Type') == 'IO'])
-    ey_deleted = len([r for r in st.session_state.deleted_records if r.get('Type') == 'EY Personnel'])
-    
-    col_del1, col_del2, col_del3 = st.columns(3)
-    with col_del1:
-        st.metric("Total Deleted", total_deleted)
-    with col_del2:
-        st.metric("IO Deleted", io_deleted)
-    with col_del3:
-        st.metric("EY Deleted", ey_deleted)
-    
-    # Export
-    if st.button("📤 Export Deleted Records", use_container_width=True):
-        csv = deleted_df.to_csv(index=False)
-        st.download_button(
-            label="⬇️ Download CSV",
-            data=csv,
-            file_name=f"deleted_records_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-    
-    # Clear deleted records
-    st.markdown("---")
-    if st.button("🧹 Clear All Deleted Records", type="secondary"):
-        if st.checkbox("Confirm clear all deleted records"):
-            st.session_state.deleted_records = []
-            save_all_data()
-            st.success("Deleted records cleared!")
-            st.rerun()
+            with col_rem2:
+                st.metric("Total EY Remuneration", f"₹{total_ey_amount:,}")
+        
+        # Grand total
+        grand_total = total_io_amount + (total_ey_amount if 'total_ey_amount' in locals() else 0)
+        st.metric("Grand Total", f"₹{grand_total:,}")
 
 # ============================================================================
 # SETTINGS MODULE
@@ -2952,29 +2007,16 @@ def show_settings():
         <div style='text-align: center; padding: 20px; background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); 
                  color: white; border-radius: 10px; margin-bottom: 30px;'>
             <h1>⚙️ SYSTEM SETTINGS</h1>
-            <p>Configure Application Settings and Preferences</p>
         </div>
     """, unsafe_allow_html=True)
     
-    # Tab layout
-    tab1, tab2, tab3, tab4 = st.tabs([
-        "💰 Remuneration Rates", 
-        "🛠️ Data Management", 
-        "ℹ️ System Info",
-        "🆘 Help & Support"
-    ])
+    tab1, tab2 = st.tabs(["💰 Remuneration Rates", "🛠️ Data Management"])
     
     with tab1:
         show_remuneration_settings()
     
     with tab2:
         show_data_management()
-    
-    with tab3:
-        show_system_info()
-    
-    with tab4:
-        show_help_support()
 
 def show_remuneration_settings():
     """Display remuneration rate settings"""
@@ -2987,16 +2029,14 @@ def show_remuneration_settings():
             "Multiple Shifts (₹):",
             min_value=0,
             value=st.session_state.remuneration_rates['multiple_shifts'],
-            step=50,
-            help="Amount for assignments with multiple shifts on same day"
+            step=50
         )
         
         single_shift = st.number_input(
             "Single Shift (₹):",
             min_value=0,
             value=st.session_state.remuneration_rates['single_shift'],
-            step=50,
-            help="Amount for assignments with single shift"
+            step=50
         )
     
     with col_rate2:
@@ -3004,19 +2044,16 @@ def show_remuneration_settings():
             "Mock Test (₹):",
             min_value=0,
             value=st.session_state.remuneration_rates['mock_test'],
-            step=50,
-            help="Amount for mock test assignments"
+            step=50
         )
         
         ey_personnel = st.number_input(
             "EY Personnel (₹ per day):",
             min_value=0,
             value=st.session_state.remuneration_rates['ey_personnel'],
-            step=100,
-            help="Daily rate for EY personnel"
+            step=100
         )
     
-    # Save button
     if st.button("💾 Save Rates", use_container_width=True):
         st.session_state.remuneration_rates = {
             'multiple_shifts': multiple_shifts,
@@ -3026,27 +2063,7 @@ def show_remuneration_settings():
         }
         
         save_all_data()
-        st.success("✅ Remuneration rates saved successfully!")
-    
-    # Reset to defaults
-    if st.button("🔄 Reset to Defaults", type="secondary"):
-        st.session_state.remuneration_rates = DEFAULT_RATES.copy()
-        save_all_data()
-        st.success("✅ Rates reset to defaults!")
-        st.rerun()
-    
-    # Current rates display
-    st.markdown("---")
-    st.markdown("### 📊 Current Rate Summary")
-    
-    rates_df = pd.DataFrame([
-        {'Category': 'Multiple Shifts', 'Amount (₹)': st.session_state.remuneration_rates['multiple_shifts']},
-        {'Category': 'Single Shift', 'Amount (₹)': st.session_state.remuneration_rates['single_shift']},
-        {'Category': 'Mock Test', 'Amount (₹)': st.session_state.remuneration_rates['mock_test']},
-        {'Category': 'EY Personnel', 'Amount (₹)': st.session_state.remuneration_rates['ey_personnel']}
-    ])
-    
-    st.dataframe(rates_df, use_container_width=True, hide_index=True)
+        st.success("✅ Remuneration rates saved!")
 
 def show_data_management():
     """Display data management options"""
@@ -3058,9 +2075,7 @@ def show_data_management():
     col_back1, col_back2 = st.columns(2)
     
     with col_back1:
-        # Create backup
-        backup_desc = st.text_input("Backup Description:", 
-                                   placeholder="Optional description for backup")
+        backup_desc = st.text_input("Backup Description:", placeholder="Optional description")
         
         if st.button("🔒 Create New Backup", use_container_width=True):
             backup_file = create_backup(backup_desc)
@@ -3070,18 +2085,15 @@ def show_data_management():
                 st.error("❌ Failed to create backup")
     
     with col_back2:
-        # List backups
         backup_files = list(BACKUP_DIR.glob("*.json"))
         if backup_files:
-            backup_options = [f"{f.name} ({f.stat().st_size/1024:.1f} KB)" for f in sorted(backup_files, reverse=True)]
+            backup_options = [f"{f.name}" for f in sorted(backup_files, reverse=True)]
             selected_backup = st.selectbox("Select Backup:", backup_options)
             
             if st.button("🔄 Restore Backup", type="secondary", use_container_width=True):
-                # Extract filename
                 backup_filename = selected_backup.split(" (")[0]
                 backup_file = BACKUP_DIR / backup_filename
                 
-                st.warning("⚠️ This will overwrite current data!")
                 if st.checkbox("I understand this will overwrite current data"):
                     if restore_from_backup(backup_file):
                         st.success("✅ Backup restored successfully!")
@@ -3090,466 +2102,6 @@ def show_data_management():
                         st.error("❌ Failed to restore backup")
         else:
             st.info("No backup files available")
-    
-    # Data Export
-    st.markdown("---")
-    st.markdown("#### 📤 Data Export")
-    
-    export_format = st.radio("Export Format:", ["CSV", "Excel", "JSON"])
-    
-    if st.button("📥 Export All System Data", use_container_width=True):
-        # Prepare export data
-        export_data = {
-            'exam_data': st.session_state.exam_data,
-            'allocation_references': st.session_state.allocation_references,
-            'remuneration_rates': st.session_state.remuneration_rates,
-            'deleted_records': st.session_state.deleted_records,
-            'export_timestamp': datetime.now().isoformat(),
-            'system_version': '2.0'
-        }
-        
-        if export_format == "JSON":
-            data_str = json.dumps(export_data, indent=4, default=str)
-            mime_type = "application/json"
-            extension = "json"
-        else:
-            # Create Excel file
-            output = BytesIO()
-            with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                # Exam data
-                if st.session_state.exam_data:
-                    exam_list = []
-                    for exam_key, data in st.session_state.exam_data.items():
-                        if isinstance(data, dict):
-                            io_count = len(data.get('io_allocations', []))
-                            ey_count = len(data.get('ey_allocations', []))
-                        else:
-                            io_count = len(data)
-                            ey_count = 0
-                        
-                        exam_list.append({
-                            'Exam': exam_key,
-                            'IO Allocations': io_count,
-                            'EY Allocations': ey_count
-                        })
-                    
-                    if exam_list:
-                        pd.DataFrame(exam_list).to_excel(writer, sheet_name='Exams', index=False)
-                
-                # Allocation references
-                if st.session_state.allocation_references:
-                    ref_list = []
-                    for exam_key, roles in st.session_state.allocation_references.items():
-                        for role, ref in roles.items():
-                            ref_list.append({
-                                'Exam': exam_key,
-                                'Role': role,
-                                'Order No.': ref.get('order_no', ''),
-                                'Page No.': ref.get('page_no', '')
-                            })
-                    
-                    if ref_list:
-                        pd.DataFrame(ref_list).to_excel(writer, sheet_name='References', index=False)
-                
-                # Rates
-                rates_df = pd.DataFrame([
-                    {'Category': 'Multiple Shifts', 'Amount (₹)': st.session_state.remuneration_rates['multiple_shifts']},
-                    {'Category': 'Single Shift', 'Amount (₹)': st.session_state.remuneration_rates['single_shift']},
-                    {'Category': 'Mock Test', 'Amount (₹)': st.session_state.remuneration_rates['mock_test']},
-                    {'Category': 'EY Personnel', 'Amount (₹)': st.session_state.remuneration_rates['ey_personnel']}
-                ])
-                rates_df.to_excel(writer, sheet_name='Rates', index=False)
-            
-            output.seek(0)
-            data_str = output.getvalue()
-            mime_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            extension = "xlsx"
-        
-        # Download button
-        filename = f"ssc_system_export_{datetime.now().strftime('%Y%m%d_%H%M')}.{extension}"
-        
-        if export_format == "Excel":
-            st.download_button(
-                label="⬇️ Download Excel Export",
-                data=data_str,
-                file_name=filename,
-                mime=mime_type,
-                use_container_width=True
-            )
-        else:
-            st.download_button(
-                label=f"⬇️ Download {export_format} Export",
-                data=data_str,
-                file_name=filename,
-                mime=mime_type,
-                use_container_width=True
-            )
-    
-    # Data Cleanup
-    st.markdown("---")
-    st.markdown("#### 🧹 Data Cleanup")
-    
-    if st.button("🗑️ Clear All Data", type="secondary"):
-        st.error("⚠️ DANGER ZONE - This will delete ALL data!")
-        
-        col_warn1, col_warn2 = st.columns(2)
-        with col_warn1:
-            confirm1 = st.checkbox("I understand this will delete ALL exams")
-        with col_warn2:
-            confirm2 = st.checkbox("I understand this will delete ALL allocations")
-        
-        if confirm1 and confirm2:
-            if st.button("🔥 CONFIRM DELETE ALL DATA", type="primary"):
-                # Create final backup
-                final_backup = create_backup("final_backup_before_wipe")
-                
-                # Clear all data
-                st.session_state.exam_data = {}
-                st.session_state.allocation = []
-                st.session_state.ey_allocation = []
-                st.session_state.allocation_references = {}
-                st.session_state.deleted_records = []
-                st.session_state.current_exam_key = ""
-                
-                # Clear files
-                for file in [DATA_FILE, REFERENCE_FILE, DELETED_RECORDS_FILE]:
-                    if file.exists():
-                        file.unlink()
-                
-                # Clear backups (optional)
-                clear_backups = st.checkbox("Also delete all backup files")
-                if clear_backups:
-                    for backup_file in BACKUP_DIR.glob("*.json"):
-                        backup_file.unlink()
-                
-                save_all_data()
-                
-                if final_backup:
-                    st.warning(f"✅ All data cleared. Final backup created: {final_backup.name}")
-                else:
-                    st.warning("✅ All data cleared. No backup created.")
-                
-                st.rerun()
-
-def show_system_info():
-    """Display system information"""
-    st.markdown("### ℹ️ System Information")
-    
-    # System details
-    info_data = {
-        'System Name': 'SSC (ER) Kolkata - Allocation System',
-        'Version': '2.0 (Streamlit Web Edition)',
-        'Developer': 'Bijay Paswan',
-        'Last Updated': datetime.now().strftime('%d-%m-%Y %H:%M:%S'),
-        'Python Version': sys.version.split()[0],
-        'Streamlit Version': st.__version__,
-        'Pandas Version': pd.__version__
-    }
-    
-    for key, value in info_data.items():
-        st.write(f"**{key}:** {value}")
-    
-    # System statistics
-    st.markdown("---")
-    st.markdown("#### 📊 System Statistics")
-    
-    col_stat1, col_stat2, col_stat3 = st.columns(3)
-    
-    with col_stat1:
-        st.metric("Total Exams", len(st.session_state.exam_data))
-    
-    with col_stat2:
-        st.metric("Total Allocations", 
-                 len(st.session_state.allocation) + len(st.session_state.ey_allocation))
-    
-    with col_stat3:
-        # Calculate storage usage
-        total_size = 0
-        for file in DATA_DIR.glob("**/*"):
-            if file.is_file():
-                total_size += file.stat().st_size
-        
-        st.metric("Storage Used", f"{total_size/1024:.1f} KB")
-    
-    # Data files
-    st.markdown("---")
-    st.markdown("#### 📁 Data Files")
-    
-    data_files = []
-    for file in DATA_DIR.glob("*"):
-        if file.is_file():
-            size_kb = file.stat().st_size / 1024
-            modified = datetime.fromtimestamp(file.stat().st_mtime).strftime('%d-%m-%Y %H:%M')
-            data_files.append({
-                'File': file.name,
-                'Size (KB)': f"{size_kb:.1f}",
-                'Last Modified': modified
-            })
-    
-    if data_files:
-        st.table(data_files)
-    else:
-        st.info("No data files found")
-    
-    # Backup files
-    st.markdown("#### 💾 Backup Files")
-    
-    backup_files = list(BACKUP_DIR.glob("*.json"))
-    if backup_files:
-        backup_info = []
-        for file in sorted(backup_files, reverse=True)[:10]:  # Show last 10
-            size_kb = file.stat().st_size / 1024
-            modified = datetime.fromtimestamp(file.stat().st_mtime).strftime('%d-%m-%Y %H:%M')
-            backup_info.append({
-                'Backup': file.name,
-                'Size (KB)': f"{size_kb:.1f}",
-                'Created': modified
-            })
-        
-        st.table(backup_info)
-    else:
-        st.info("No backup files found")
-
-def show_help_support():
-    """Display help and support information"""
-    st.markdown("### 🆘 Help & Support")
-    
-    # Quick Start Guide
-    with st.expander("🚀 Quick Start Guide", expanded=True):
-        st.markdown("""
-        **Step-by-Step Guide:**
-        
-        1. **Create Exam:**
-           - Go to "Exam Management"
-           - Enter exam name and year
-           - Click "Create/Update Exam"
-        
-        2. **Load Master Data:**
-           - Go to "Centre Coordinator" section
-           - Load IO Master and Venue List files
-           - Use default data for testing
-        
-        3. **Allocate Personnel:**
-           - Select venue and dates
-           - Choose Centre Coordinator or EY Personnel
-           - Enter allocation reference
-           - Click allocate
-        
-        4. **Generate Reports:**
-           - Go to "Reports" section
-           - View allocations and remuneration
-           - Export data as needed
-        """)
-    
-    # FAQ
-    with st.expander("❓ Frequently Asked Questions"):
-        st.markdown("""
-        **Q: How do I import my existing data?**
-        A: Use the file uploaders in each section to import Excel files with your data.
-        
-        **Q: Can I export data for offline use?**
-        A: Yes! All sections have export options in CSV, Excel, and JSON formats.
-        
-        **Q: How are remuneration amounts calculated?**
-        A: System uses the rates from Settings. Multiple shifts = higher rate, mock tests = separate rate.
-        
-        **Q: Is my data secure?**
-        A: All data is stored locally in the `data/` directory. Regular backups are recommended.
-        
-        **Q: Can I use this on multiple computers?**
-        A: Yes, export your data and import it on another computer.
-        """)
-    
-    # Contact Information
-    with st.expander("📞 Contact & Support"):
-        st.markdown("""
-        **For Technical Support:**
-        - **Developer:** Bijay Paswan
-        - **System:** SSC (ER) Kolkata Allocation System
-        
-        **Important Notes:**
-        - This is a web application built with Streamlit
-        - All data is stored locally
-        - Regular backups are recommended
-        - For feature requests or bug reports, contact the developer
-        
-        **Data Formats:**
-        - IO Master: Requires NAME, AREA, CENTRE_CODE columns
-        - Venue List: Requires VENUE, DATE, SHIFT columns
-        - EY Master: Requires NAME column, other columns optional
-        """)
-    
-    # System Status
-    st.markdown("---")
-    st.markdown("#### 🟢 System Status")
-    
-    # Check system health
-    system_checks = []
-    
-    # Check data directory
-    if DATA_DIR.exists():
-        system_checks.append(("✅ Data Directory", "Accessible"))
-    else:
-        system_checks.append(("❌ Data Directory", "Not Found"))
-    
-    # Check write permissions
-    try:
-        test_file = DATA_DIR / "test.txt"
-        test_file.write_text("test")
-        test_file.unlink()
-        system_checks.append(("✅ Write Permissions", "OK"))
-    except:
-        system_checks.append(("❌ Write Permissions", "Failed"))
-    
-    # Check data files
-    for file, name in [(DATA_FILE, "Exam Data"), (REFERENCE_FILE, "References")]:
-        if file.exists():
-            size_kb = file.stat().st_size / 1024
-            system_checks.append((f"✅ {name}", f"{size_kb:.1f} KB"))
-        else:
-            system_checks.append((f"⚠️ {name}", "Not Found"))
-    
-    # Display checks
-    for check, status in system_checks:
-        st.write(f"{check}: {status}")
-
-# ============================================================================
-# HELPER FUNCTIONS
-# ============================================================================
-
-def show_current_data_preview():
-    """Display preview of current data"""
-    st.markdown("### 📊 Current Data Preview")
-    
-    # IO Data
-    if not st.session_state.io_df.empty:
-        st.markdown("#### 👨‍💼 Centre Coordinator Data")
-        st.dataframe(st.session_state.io_df.head(), use_container_width=True)
-        st.write(f"**Total Records:** {len(st.session_state.io_df)}")
-    else:
-        st.info("No IO data loaded")
-    
-    # Venue Data
-    if not st.session_state.venue_df.empty:
-        st.markdown("#### 🏢 Venue Data")
-        st.dataframe(st.session_state.venue_df.head(), use_container_width=True)
-        st.write(f"**Total Records:** {len(st.session_state.venue_df)}")
-    else:
-        st.info("No venue data loaded")
-    
-    # EY Data
-    if not st.session_state.ey_df.empty:
-        st.markdown("#### 👁️ EY Personnel Data")
-        st.dataframe(st.session_state.ey_df.head(), use_container_width=True)
-        st.write(f"**Total Records:** {len(st.session_state.ey_df)}")
-    else:
-        st.info("No EY data loaded")
-
-def show_allocation_references():
-    """Display allocation references interface"""
-    st.markdown("### 📚 Allocation References")
-    
-    if not st.session_state.allocation_references:
-        st.info("No allocation references available")
-        return
-    
-    # Create expandable sections for each exam
-    for exam_key, roles in st.session_state.allocation_references.items():
-        with st.expander(f"📖 {exam_key}", expanded=False):
-            for role, ref in roles.items():
-                col_ref1, col_ref2 = st.columns([3, 1])
-                
-                with col_ref1:
-                    st.write(f"**{role}:**")
-                    st.write(f"  Order No.: {ref.get('order_no', 'N/A')}")
-                    st.write(f"  Page No.: {ref.get('page_no', 'N/A')}")
-                    
-                    remarks = ref.get('remarks', '')
-                    if remarks:
-                        st.write(f"  Remarks: {remarks}")
-                    
-                    timestamp = ref.get('timestamp', '')
-                    if timestamp:
-                        try:
-                            timestamp = datetime.fromisoformat(timestamp).strftime("%d-%m-%Y %H:%M")
-                            st.write(f"  Created: {timestamp}")
-                        except:
-                            pass
-                
-                with col_ref2:
-                    if st.button("🗑️ Delete", key=f"del_ref_{exam_key}_{role}"):
-                        if st.checkbox(f"Confirm delete reference for {role}"):
-                            del st.session_state.allocation_references[exam_key][role]
-                            
-                            # Remove exam if no references left
-                            if not st.session_state.allocation_references[exam_key]:
-                                del st.session_state.allocation_references[exam_key]
-                            
-                            save_all_data()
-                            st.success("Reference deleted!")
-                            st.rerun()
-
-def generate_io_report():
-    """Generate comprehensive IO report"""
-    if not st.session_state.allocation:
-        st.warning("No allocation data available")
-        return
-    
-    alloc_df = pd.DataFrame(st.session_state.allocation)
-    
-    # Create detailed report
-    report_data = []
-    
-    for io_name in alloc_df['IO Name'].unique():
-        io_data = alloc_df[alloc_df['IO Name'] == io_name]
-        
-        # Calculate statistics
-        total_days = io_data['Date'].nunique()
-        total_shifts = len(io_data)
-        total_venues = io_data['Venue'].nunique()
-        
-        # Count by shift type
-        mock_days = io_data[io_data['Mock Test']]['Date'].nunique()
-        regular_days = total_days - mock_days
-        
-        # Group by date to find multiple shifts
-        date_shift_counts = io_data.groupby('Date')['Shift'].nunique()
-        multiple_shift_days = (date_shift_counts > 1).sum()
-        single_shift_days = (date_shift_counts == 1).sum()
-        
-        # Calculate remuneration
-        mock_amount = mock_days * st.session_state.remuneration_rates['mock_test']
-        single_amount = single_shift_days * st.session_state.remuneration_rates['single_shift']
-        multi_amount = multiple_shift_days * st.session_state.remuneration_rates['multiple_shifts']
-        total_amount = mock_amount + single_amount + multi_amount
-        
-        report_data.append({
-            'IO Name': io_name,
-            'Total Days': total_days,
-            'Total Shifts': total_shifts,
-            'Total Venues': total_venues,
-            'Mock Days': mock_days,
-            'Regular Days': regular_days,
-            'Single Shift Days': single_shift_days,
-            'Multiple Shift Days': multiple_shift_days,
-            'Total Amount (₹)': total_amount
-        })
-    
-    if report_data:
-        report_df = pd.DataFrame(report_data)
-        
-        st.markdown("### 📊 IO Allocation Report")
-        st.dataframe(report_df, use_container_width=True)
-        
-        # Export
-        csv = report_df.to_csv(index=False)
-        st.download_button(
-            label="⬇️ Download Report",
-            data=csv,
-            file_name=f"io_allocation_report_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
 
 # ============================================================================
 # MAIN APPLICATION
@@ -3560,21 +2112,15 @@ def main():
     try:
         # Configure page
         st.set_page_config(
-            page_title="SSC (ER) Kolkata - Allocation System",
+            page_title="SSC (ER) Kolkata - Enhanced Allocation System",
             page_icon="🏛️",
             layout="wide",
-            initial_sidebar_state="expanded",
-            menu_items={
-                'Get Help': 'https://www.example.com',
-                'Report a bug': 'https://www.example.com',
-                'About': "### SSC (ER) Kolkata Allocation System\n\nVersion 2.0\n\nDesigned by Bijay Paswan"
-            }
+            initial_sidebar_state="expanded"
         )
         
         # Apply custom CSS
         st.markdown("""
             <style>
-            /* Main styling */
             .main-header {
                 text-align: center;
                 padding: 1.5rem 0;
@@ -3585,79 +2131,25 @@ def main():
                 box-shadow: 0 4px 15px rgba(0,0,0,0.1);
             }
             
-            /* Card styling */
             .card {
                 background: white;
                 padding: 1.5rem;
                 border-radius: 10px;
                 box-shadow: 0 2px 10px rgba(0,0,0,0.1);
                 margin-bottom: 1rem;
-                transition: transform 0.3s ease;
             }
             
-            .card:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 4px 20px rgba(0,0,0,0.15);
-            }
-            
-            /* Metric cards */
-            .metric-card {
-                background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-                padding: 1.2rem;
-                border-radius: 10px;
-                text-align: center;
-                box-shadow: 0 2px 5px rgba(0,0,0,0.1);
-                border: 1px solid #e0e0e0;
-            }
-            
-            /* Button styling */
             .stButton > button {
                 border-radius: 8px;
                 font-weight: 500;
-                transition: all 0.3s ease;
             }
             
-            .stButton > button:hover {
-                transform: translateY(-1px);
-                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-            }
-            
-            /* Success button */
-            .success-button {
-                background: linear-gradient(135deg, #56ab2f 0%, #a8e063 100%);
-                color: white;
-                border: none;
-            }
-            
-            /* Danger button */
-            .danger-button {
-                background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
-                color: white;
-                border: none;
-            }
-            
-            /* Warning button */
-            .warning-button {
-                background: linear-gradient(135deg, #f46b45 0%, #eea849 100%);
-                color: white;
-                border: none;
-            }
-            
-            /* Info button */
-            .info-button {
-                background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
-                color: white;
-                border: none;
-            }
-            
-            /* Tab styling */
             .stTabs [data-baseweb="tab-list"] {
                 gap: 8px;
             }
             
             .stTabs [data-baseweb="tab"] {
                 height: 50px;
-                white-space: pre-wrap;
                 background-color: #f8f9fa;
                 border-radius: 8px 8px 0 0;
                 font-weight: 500;
@@ -3668,60 +2160,12 @@ def main():
                 color: white;
             }
             
-            /* Dataframe styling */
-            .dataframe {
-                border-radius: 8px;
-                overflow: hidden;
-            }
-            
-            /* Sidebar styling */
-            [data-testid="stSidebar"] {
-                background: linear-gradient(180deg, #2c3e50 0%, #34495e 100%);
-            }
-            
-            [data-testid="stSidebar"] * {
-                color: white !important;
-            }
-            
-            /* Hide Streamlit branding */
             #MainMenu {visibility: hidden;}
             footer {visibility: hidden;}
-            
-            /* Scrollbar styling */
-            ::-webkit-scrollbar {
-                width: 8px;
-                height: 8px;
-            }
-            
-            ::-webkit-scrollbar-track {
-                background: #f1f1f1;
-                border-radius: 4px;
-            }
-            
-            ::-webkit-scrollbar-thumb {
-                background: #888;
-                border-radius: 4px;
-            }
-            
-            ::-webkit-scrollbar-thumb:hover {
-                background: #555;
-            }
-            
-            /* Responsive design */
-            @media (max-width: 768px) {
-                .main-header {
-                    padding: 1rem;
-                    font-size: 0.9rem;
-                }
-                
-                .card {
-                    padding: 1rem;
-                }
-            }
             </style>
         """, unsafe_allow_html=True)
         
-        # Initialize session state (COMPLETELY)
+        # Initialize session state
         initialize_session_state()
         
         # Load existing data
@@ -3732,7 +2176,7 @@ def main():
             st.markdown("""
                 <div style='text-align: center; padding: 20px 0;'>
                     <h2>📋 Navigation</h2>
-                    <p style='font-size: 0.9rem; color: #bdc3c7;'>SSC Allocation System</p>
+                    <p style='font-size: 0.9rem; color: #bdc3c7;'>Enhanced Date Selection System</p>
                 </div>
             """, unsafe_allow_html=True)
             
@@ -3762,7 +2206,6 @@ def main():
             if st.session_state.current_exam_key:
                 st.success(f"**{st.session_state.current_exam_key[:30]}{'...' if len(st.session_state.current_exam_key) > 30 else ''}**")
                 
-                # Quick stats
                 current_io = len([a for a in st.session_state.allocation 
                                 if a.get('Exam') == st.session_state.current_exam_key])
                 current_ey = len([a for a in st.session_state.ey_allocation 
@@ -3794,23 +2237,6 @@ def main():
             if st.button("📥 Load Defaults", use_container_width=True):
                 load_default_master_data()
                 st.rerun()
-            
-            st.markdown("---")
-            
-            # System info
-            st.markdown("### ℹ️ System Info")
-            st.info(f"Updated: {datetime.now().strftime('%H:%M')}")
-            
-            # Developer credit
-            st.markdown("---")
-            st.markdown("""
-                <div style='text-align: center; padding: 10px 0;'>
-                    <p style='font-size: 0.8rem; color: #95a5a6;'>
-                        Designed by Bijay Paswan<br>
-                        SSC (ER) Kolkata
-                    </p>
-                </div>
-            """, unsafe_allow_html=True)
         
         # Main content area
         try:
@@ -3832,24 +2258,10 @@ def main():
                 
         except Exception as e:
             st.error(f"An error occurred: {str(e)}")
-            logging.error(f"Application error: {str(e)}")
-            logging.error(traceback.format_exc())
-            
-            # Show error details in expander
-            with st.expander("Error Details"):
-                st.code(traceback.format_exc())
-            
-            # Recovery option
-            if st.button("🔄 Restart Application"):
-                for key in list(st.session_state.keys()):
-                    del st.session_state[key]
-                st.rerun()
+            st.code(traceback.format_exc())
     
     except Exception as e:
-        # Critical error handling
         st.error(f"Critical error: {str(e)}")
-        logging.critical(f"Critical application error: {str(e)}")
-        logging.critical(traceback.format_exc())
 
 # ============================================================================
 # ENTRY POINT
