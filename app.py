@@ -20,6 +20,10 @@ from io import BytesIO, StringIO
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 import traceback
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side, numbers
+from openpyxl.utils import get_column_letter
+
 warnings.filterwarnings('ignore')
 
 # ============================================================================
@@ -332,7 +336,12 @@ def load_default_master_data():
             'Section Officer', 'Assistant Section Officer', 'Section Officer',
             'Deputy Commissioner', 'Assistant Commissioner', 'Section Officer',
             'Assistant Section Officer'
-        ]
+        ],
+        'BANK_NAME': ['SBI', 'PNB', 'BOB', 'SBI', 'PNB', 'BOB', 'SBI', 'PNB', 'BOB', 'SBI'],
+        'ACCOUNT_NUMBER': ['1234567890', '2345678901', '3456789012', '4567890123', '5678901234',
+                          '6789012345', '7890123456', '8901234567', '9012345678', '0123456789'],
+        'IFSC_CODE': ['SBIN0001234', 'PNBN0012345', 'BARB0XXXXXX', 'SBIN0001234', 'PNBN0012345',
+                     'BARB0XXXXXX', 'SBIN0001234', 'PNBN0012345', 'BARB0XXXXXX', 'SBIN0001234']
     }
     
     st.session_state.io_df = pd.DataFrame(default_io_data)
@@ -599,6 +608,974 @@ def create_reference_form(allocation_type):
             return None
     
     return None
+
+# ============================================================================
+# REPORT GENERATION MODULE
+# ============================================================================
+
+def export_to_excel():
+    """Generate comprehensive allocation report with all sheets"""
+    if not st.session_state.allocation and not st.session_state.ey_allocation:
+        st.warning("No allocation data available")
+        return None
+    
+    try:
+        # Create Excel writer
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            
+            # Get current exam data
+            io_allocations = st.session_state.allocation
+            ey_allocations = st.session_state.ey_allocation
+            
+            # Convert to DataFrames
+            io_df = pd.DataFrame(io_allocations)
+            ey_df = pd.DataFrame(ey_allocations)
+            
+            # ============================================
+            # A. IO ALLOCATIONS SHEET
+            # ============================================
+            if not io_df.empty:
+                # Merge with IO master data
+                if not st.session_state.io_df.empty:
+                    io_master = st.session_state.io_df.copy()
+                    # Ensure NAME column exists in both
+                    if 'NAME' in io_master.columns and 'IO Name' in io_df.columns:
+                        # Standardize column names for merge
+                        io_master.rename(columns={'NAME': 'IO Name'}, inplace=True)
+                        io_merged = pd.merge(io_df, io_master, on='IO Name', how='left', suffixes=('', '_master'))
+                    else:
+                        io_merged = io_df.copy()
+                else:
+                    io_merged = io_df.copy()
+                
+                # Merge with Venue master data
+                if not st.session_state.venue_df.empty:
+                    venue_master = st.session_state.venue_df.copy()
+                    # Standardize column names
+                    venue_master.rename(columns={'VENUE': 'Venue', 'DATE': 'Date', 'SHIFT': 'Shift'}, inplace=True)
+                    
+                    # Create a unique key for merging
+                    io_merged['merge_key'] = io_merged['Venue'] + '|' + io_merged['Date'] + '|' + io_merged['Shift']
+                    venue_master['merge_key'] = venue_master['Venue'] + '|' + venue_master['Date'] + '|' + venue_master['Shift']
+                    
+                    io_merged = pd.merge(io_merged, venue_master, on='merge_key', how='left', suffixes=('', '_venue'))
+                    io_merged.drop('merge_key', axis=1, inplace=True)
+                
+                # Write to Excel
+                io_merged.to_excel(writer, sheet_name='IO Allocations', index=False)
+                
+                # Apply formatting
+                worksheet = writer.sheets['IO Allocations']
+                apply_formatting(worksheet)
+            
+            # ============================================
+            # B. EY ALLOCATIONS SHEET
+            # ============================================
+            if not ey_df.empty:
+                # Write EY allocations
+                ey_df.to_excel(writer, sheet_name='EY Allocations', index=False)
+                
+                # Apply formatting
+                worksheet = writer.sheets['EY Allocations']
+                apply_formatting(worksheet)
+            
+            # ============================================
+            # C. IO SUMMARY SHEET
+            # ============================================
+            if not io_df.empty:
+                io_summary_data = []
+                
+                for io_name in io_df['IO Name'].unique():
+                    io_data = io_df[io_df['IO Name'] == io_name]
+                    first_row = io_data.iloc[0]
+                    
+                    # Get IO master details
+                    io_master_info = {}
+                    if not st.session_state.io_df.empty and 'NAME' in st.session_state.io_df.columns:
+                        io_master_row = st.session_state.io_df[st.session_state.io_df['NAME'] == io_name]
+                        if not io_master_row.empty:
+                            io_master_info = io_master_row.iloc[0].to_dict()
+                    
+                    # Calculate statistics
+                    total_days = io_data['Date'].nunique()
+                    total_shifts = len(io_data)
+                    total_venues = io_data['Venue'].nunique()
+                    
+                    # Get venues with dates
+                    venue_details = []
+                    for venue in io_data['Venue'].unique():
+                        venue_dates = io_data[io_data['Venue'] == venue]['Date'].unique()
+                        venue_dates_str = ", ".join(sorted(venue_dates))
+                        
+                        # Get venue address if available
+                        venue_address = ""
+                        if not st.session_state.venue_df.empty:
+                            venue_info = st.session_state.venue_df[
+                                st.session_state.venue_df['VENUE'] == venue
+                            ]
+                            if not venue_info.empty:
+                                venue_address = venue_info.iloc[0].get('ADDRESS', '')
+                        
+                        venue_details.append(f"{venue} ({venue_dates_str}) - {venue_address}")
+                    
+                    # Calculate shift types
+                    date_shift_counts = io_data.groupby('Date')['Shift'].nunique()
+                    multiple_shift_days = (date_shift_counts > 1).sum()
+                    single_shift_days = (date_shift_counts == 1).sum()
+                    
+                    # Get dates for each shift type
+                    multiple_shift_dates = []
+                    single_shift_dates = []
+                    for date, shift_count in date_shift_counts.items():
+                        if shift_count > 1:
+                            multiple_shift_dates.append(date)
+                        else:
+                            single_shift_dates.append(date)
+                    
+                    # Prepare summary row
+                    summary_row = {
+                        'IO Name': io_name,
+                        'Role': first_row.get('Role', ''),
+                        'Total Venues Assigned': total_venues,
+                        'Venues with Dates': "\n".join(venue_details),
+                        'Total Days': total_days,
+                        'Total Shifts': total_shifts,
+                        'Multiple Shift Days': multiple_shift_days,
+                        'Single Shift Days': single_shift_days,
+                        'Multiple Shift Dates': ", ".join(multiple_shift_dates),
+                        'Single Shift Dates': ", ".join(single_shift_dates),
+                        'Area': io_master_info.get('AREA', ''),
+                        'Designation': io_master_info.get('DESIGNATION', ''),
+                        'Mobile': io_master_info.get('MOBILE', ''),
+                        'Email': io_master_info.get('EMAIL', ''),
+                        'Bank Name': io_master_info.get('BANK_NAME', ''),
+                        'Account Number': io_master_info.get('ACCOUNT_NUMBER', ''),
+                        'IFSC Code': io_master_info.get('IFSC_CODE', '')
+                    }
+                    
+                    io_summary_data.append(summary_row)
+                
+                # Create DataFrame and write to Excel
+                io_summary_df = pd.DataFrame(io_summary_data)
+                io_summary_df.to_excel(writer, sheet_name='IO Summary', index=False)
+                
+                # Apply formatting
+                worksheet = writer.sheets['IO Summary']
+                apply_formatting(worksheet)
+            
+            # ============================================
+            # D. VENUE-IO SHIFTS SHEET
+            # ============================================
+            if not io_df.empty:
+                venue_io_data = []
+                
+                # Get unique venues
+                venues = io_df['Venue'].unique()
+                
+                for venue in venues:
+                    venue_io_df = io_df[io_df['Venue'] == venue]
+                    
+                    # Get venue master info
+                    venue_info = {}
+                    if not st.session_state.venue_df.empty:
+                        venue_master = st.session_state.venue_df[
+                            st.session_state.venue_df['VENUE'] == venue
+                        ]
+                        if not venue_master.empty:
+                            venue_info = venue_master.iloc[0].to_dict()
+                    
+                    # Group by IO
+                    for io_name in venue_io_df['IO Name'].unique():
+                        io_venue_data = venue_io_df[venue_io_df['IO Name'] == io_name]
+                        first_row = io_venue_data.iloc[0]
+                        
+                        # Calculate statistics for this IO at this venue
+                        total_days_at_venue = io_venue_data['Date'].nunique()
+                        total_shifts_at_venue = len(io_venue_data)
+                        
+                        # Calculate shift types
+                        date_shift_counts = io_venue_data.groupby('Date')['Shift'].nunique()
+                        multiple_shifts = (date_shift_counts > 1).sum()
+                        single_shifts = (date_shift_counts == 1).sum()
+                        
+                        # Get dates for each shift type
+                        multiple_shift_dates = []
+                        single_shift_dates = []
+                        for date, shift_count in date_shift_counts.items():
+                            if shift_count > 1:
+                                multiple_shift_dates.append(date)
+                            else:
+                                single_shift_dates.append(date)
+                        
+                        # Get IO master info
+                        io_master_info = {}
+                        if not st.session_state.io_df.empty and 'NAME' in st.session_state.io_df.columns:
+                            io_master_row = st.session_state.io_df[st.session_state.io_df['NAME'] == io_name]
+                            if not io_master_row.empty:
+                                io_master_info = io_master_row.iloc[0].to_dict()
+                        
+                        # Prepare row
+                        venue_io_row = {
+                            'Venue': venue,
+                            'IO Name': io_name,
+                            'Role': first_row.get('Role', ''),
+                            'Total Days at Venue': total_days_at_venue,
+                            'Multiple Shifts Count': multiple_shifts,
+                            'Single Shifts Count': single_shifts,
+                            'Multiple Shift Dates': ", ".join(multiple_shift_dates),
+                            'Single Shift Dates': ", ".join(single_shift_dates),
+                            'IO Area': io_master_info.get('AREA', ''),
+                            'IO Designation': io_master_info.get('DESIGNATION', ''),
+                            'IO Mobile': io_master_info.get('MOBILE', ''),
+                            'Venue Address': venue_info.get('ADDRESS', ''),
+                            'Centre Code': venue_info.get('CENTRE_CODE', ''),
+                            'Centre Name': venue_info.get('CENTRE NAME', venue),
+                            'District': venue_info.get('DISTRICT', ''),
+                            'Capacity': venue_info.get('CAPACITY', '')
+                        }
+                        
+                        venue_io_data.append(venue_io_row)
+                
+                # Create DataFrame and write to Excel
+                if venue_io_data:
+                    venue_io_df = pd.DataFrame(venue_io_data)
+                    venue_io_df.to_excel(writer, sheet_name='Venue-IO Shifts', index=False)
+                    
+                    # Apply formatting
+                    worksheet = writer.sheets['Venue-IO Shifts']
+                    apply_formatting(worksheet)
+            
+            # ============================================
+            # E. VENUE-ROLE SUMMARY SHEET
+            # ============================================
+            if not io_df.empty:
+                venue_role_data = []
+                
+                for venue in io_df['Venue'].unique():
+                    venue_data = io_df[io_df['Venue'] == venue]
+                    
+                    for role in venue_data['Role'].unique():
+                        role_data = venue_data[venue_data['Role'] == role]
+                        
+                        # Count assignments
+                        assignments_count = len(role_data)
+                        
+                        # Get unique dates
+                        unique_dates = sorted(role_data['Date'].unique())
+                        dates_str = ", ".join(unique_dates)
+                        
+                        # Get unique IOs
+                        unique_ios = sorted(role_data['IO Name'].unique())
+                        ios_str = ", ".join(unique_ios)
+                        
+                        venue_role_row = {
+                            'Venue': venue,
+                            'Role': role,
+                            'Assignments Count': assignments_count,
+                            'Dates': dates_str,
+                            'IOs Assigned': ios_str
+                        }
+                        
+                        venue_role_data.append(venue_role_row)
+                
+                # Create DataFrame and write to Excel
+                if venue_role_data:
+                    venue_role_df = pd.DataFrame(venue_role_data)
+                    venue_role_df.to_excel(writer, sheet_name='Venue-Role Summary', index=False)
+                    
+                    # Apply formatting
+                    worksheet = writer.sheets['Venue-Role Summary']
+                    apply_formatting(worksheet)
+            
+            # ============================================
+            # F. DATE SUMMARY SHEET
+            # ============================================
+            if not io_df.empty:
+                date_summary_data = []
+                
+                for date in io_df['Date'].unique():
+                    date_data = io_df[io_df['Date'] == date]
+                    
+                    unique_venues = date_data['Venue'].nunique()
+                    unique_ios = date_data['IO Name'].nunique()
+                    total_shifts = len(date_data)
+                    
+                    # Get venue list
+                    venues_list = sorted(date_data['Venue'].unique())
+                    venues_str = ", ".join(venues_list)
+                    
+                    # Get IO list
+                    ios_list = sorted(date_data['IO Name'].unique())
+                    ios_str = ", ".join(ios_list)
+                    
+                    date_summary_row = {
+                        'Date': date,
+                        'Unique Venues': unique_venues,
+                        'Unique IOs': unique_ios,
+                        'Total Shifts': total_shifts,
+                        'Venues': venues_str,
+                        'IOs': ios_str
+                    }
+                    
+                    date_summary_data.append(date_summary_row)
+                
+                # Create DataFrame and write to Excel
+                if date_summary_data:
+                    date_summary_df = pd.DataFrame(date_summary_data)
+                    date_summary_df.to_excel(writer, sheet_name='Date Summary', index=False)
+                    
+                    # Apply formatting
+                    worksheet = writer.sheets['Date Summary']
+                    apply_formatting(worksheet)
+            
+            # ============================================
+            # G. EY SUMMARY SHEET
+            # ============================================
+            if not ey_df.empty:
+                ey_summary_data = []
+                
+                for ey_person in ey_df['EY Personnel'].unique():
+                    ey_person_data = ey_df[ey_df['EY Personnel'] == ey_person]
+                    first_row = ey_person_data.iloc[0]
+                    
+                    # Calculate statistics
+                    total_venues = ey_person_data['Venue'].nunique()
+                    total_days = ey_person_data['Date'].nunique()
+                    total_shifts = len(ey_person_data)
+                    
+                    # Get venues list
+                    venues_list = sorted(ey_person_data['Venue'].unique())
+                    venues_str = ", ".join(venues_list)
+                    
+                    # Get dates list
+                    dates_list = sorted(ey_person_data['Date'].unique())
+                    dates_str = ", ".join(dates_list)
+                    
+                    # Calculate amount
+                    rate = first_row.get('Rate (₹)', st.session_state.remuneration_rates['ey_personnel'])
+                    total_amount = total_days * rate
+                    
+                    ey_summary_row = {
+                        'EY Personnel': ey_person,
+                        'Venues': venues_str,
+                        'Total Days': total_days,
+                        'Total Shifts': total_shifts,
+                        'Rate per Day (₹)': rate,
+                        'Total Amount (₹)': total_amount,
+                        'Dates': dates_str,
+                        'Mobile': first_row.get('Mobile', ''),
+                        'Email': first_row.get('Email', ''),
+                        'ID Number': first_row.get('ID Number', ''),
+                        'Designation': first_row.get('Designation', '')
+                    }
+                    
+                    ey_summary_data.append(ey_summary_row)
+                
+                # Create DataFrame and write to Excel
+                if ey_summary_data:
+                    ey_summary_df = pd.DataFrame(ey_summary_data)
+                    ey_summary_df.to_excel(writer, sheet_name='EY Summary', index=False)
+                    
+                    # Apply formatting
+                    worksheet = writer.sheets['EY Summary']
+                    apply_formatting(worksheet)
+            
+            # ============================================
+            # H. DELETED RECORDS SHEET
+            # ============================================
+            if st.session_state.deleted_records:
+                deleted_df = pd.DataFrame(st.session_state.deleted_records)
+                deleted_df.to_excel(writer, sheet_name='Deleted Records', index=False)
+                
+                # Apply formatting
+                worksheet = writer.sheets['Deleted Records']
+                apply_formatting(worksheet)
+            
+            # ============================================
+            # I. RATES SHEET
+            # ============================================
+            rates_data = {
+                'Category': ['Multiple Shifts', 'Single Shift', 'Mock Test', 'EY Personnel'],
+                'Amount (₹)': [
+                    st.session_state.remuneration_rates['multiple_shifts'],
+                    st.session_state.remuneration_rates['single_shift'],
+                    st.session_state.remuneration_rates['mock_test'],
+                    st.session_state.remuneration_rates['ey_personnel']
+                ],
+                'Description': [
+                    'For assignments with multiple shifts on same day',
+                    'For assignments with single shift',
+                    'For mock test assignments',
+                    'Daily rate for EY personnel'
+                ]
+            }
+            
+            rates_df = pd.DataFrame(rates_data)
+            rates_df.to_excel(writer, sheet_name='Rates', index=False)
+            
+            # Apply formatting
+            worksheet = writer.sheets['Rates']
+            apply_formatting(worksheet)
+            
+            # ============================================
+            # Auto-adjust column widths
+            # ============================================
+            for sheet_name in writer.sheets:
+                worksheet = writer.sheets[sheet_name]
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = get_column_letter(column[0].column)
+                    
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
+        
+        output.seek(0)
+        return output
+    
+    except Exception as e:
+        st.error(f"Error generating report: {str(e)}")
+        logging.error(f"Report generation error: {str(e)}")
+        return None
+
+def export_remuneration_report():
+    """Generate comprehensive remuneration report with all sheets"""
+    if not st.session_state.allocation and not st.session_state.ey_allocation:
+        st.warning("No allocation data available")
+        return None
+    
+    try:
+        # Create Excel writer
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            
+            # Get current exam data
+            io_allocations = st.session_state.allocation
+            ey_allocations = st.session_state.ey_allocation
+            
+            # Convert to DataFrames
+            io_df = pd.DataFrame(io_allocations)
+            ey_df = pd.DataFrame(ey_allocations)
+            
+            # ============================================
+            # A. IO DETAILED REPORT SHEET
+            # ============================================
+            if not io_df.empty:
+                io_detailed_data = []
+                
+                for (io_name, date), group in io_df.groupby(['IO Name', 'Date']):
+                    first_row = group.iloc[0]
+                    
+                    # Get venues for this day
+                    venues = sorted(group['Venue'].unique())
+                    venues_str = ", ".join(venues)
+                    
+                    # Calculate shift details
+                    total_shifts = len(group)
+                    shift_list = sorted(group['Shift'].unique())
+                    shift_details = ", ".join(shift_list)
+                    
+                    # Determine shift type and amount
+                    mock_test = any(group['Mock Test'])
+                    if mock_test:
+                        shift_type = "Mock Test"
+                        amount = st.session_state.remuneration_rates['mock_test']
+                    else:
+                        if total_shifts > 1:
+                            shift_type = "Multiple Shifts"
+                            amount = st.session_state.remuneration_rates['multiple_shifts']
+                        else:
+                            shift_type = "Single Shift"
+                            amount = st.session_state.remuneration_rates['single_shift']
+                    
+                    # Get reference info
+                    order_no = first_row.get('Order No.', '')
+                    page_no = first_row.get('Page No.', '')
+                    
+                    io_detailed_row = {
+                        'IO Name': io_name,
+                        'Venues': venues_str,
+                        'Role': first_row.get('Role', ''),
+                        'Date': date,
+                        'Total Shifts': total_shifts,
+                        'Shift Type': shift_type,
+                        'Shift Details': shift_details,
+                        'Mock Test': 'Yes' if mock_test else 'No',
+                        'Amount (₹)': amount,
+                        'Order No.': order_no,
+                        'Page No.': page_no
+                    }
+                    
+                    io_detailed_data.append(io_detailed_row)
+                
+                # Create DataFrame and write to Excel
+                if io_detailed_data:
+                    io_detailed_df = pd.DataFrame(io_detailed_data)
+                    io_detailed_df.to_excel(writer, sheet_name='IO Detailed Report', index=False)
+                    
+                    # Apply formatting
+                    worksheet = writer.sheets['IO Detailed Report']
+                    apply_formatting(worksheet)
+            
+            # ============================================
+            # B. IO SUMMARY SHEET
+            # ============================================
+            if not io_df.empty:
+                io_summary_data = []
+                
+                for io_name in io_df['IO Name'].unique():
+                    io_data = io_df[io_df['IO Name'] == io_name]
+                    first_row = io_data.iloc[0]
+                    
+                    # Get IO master details
+                    io_master_info = {}
+                    if not st.session_state.io_df.empty and 'NAME' in st.session_state.io_df.columns:
+                        io_master_row = st.session_state.io_df[st.session_state.io_df['NAME'] == io_name]
+                        if not io_master_row.empty:
+                            io_master_info = io_master_row.iloc[0].to_dict()
+                    
+                    # Calculate statistics
+                    total_days = io_data['Date'].nunique()
+                    total_shifts = len(io_data)
+                    total_venues = io_data['Venue'].nunique()
+                    
+                    # Get venues list
+                    venues_list = sorted(io_data['Venue'].unique())
+                    venues_str = ", ".join(venues_list)
+                    
+                    # Calculate shift types and amounts
+                    mock_days = io_data[io_data['Mock Test']]['Date'].nunique()
+                    exam_days = total_days - mock_days
+                    
+                    date_shift_counts = io_data.groupby('Date')['Shift'].nunique()
+                    multiple_shift_days = (date_shift_counts > 1).sum()
+                    single_shift_days = (date_shift_counts == 1).sum()
+                    
+                    # Get dates for each category
+                    mock_dates = sorted(io_data[io_data['Mock Test']]['Date'].unique())
+                    multiple_shift_dates = []
+                    single_shift_dates = []
+                    
+                    for date, shift_count in date_shift_counts.items():
+                        if shift_count > 1 and date not in mock_dates:
+                            multiple_shift_dates.append(date)
+                        elif shift_count == 1 and date not in mock_dates:
+                            single_shift_dates.append(date)
+                    
+                    # Calculate amounts
+                    mock_amount = mock_days * st.session_state.remuneration_rates['mock_test']
+                    multiple_amount = multiple_shift_days * st.session_state.remuneration_rates['multiple_shifts']
+                    single_amount = single_shift_days * st.session_state.remuneration_rates['single_shift']
+                    total_amount = mock_amount + multiple_amount + single_amount
+                    
+                    # Prepare summary row
+                    summary_row = {
+                        'IO Name': io_name,
+                        'Role': first_row.get('Role', ''),
+                        'Venues': venues_str,
+                        'Total Amount (₹)': total_amount,
+                        'Total Shifts': total_shifts,
+                        'Total Days': total_days,
+                        'Mock Days': mock_days,
+                        'Exam Days': exam_days,
+                        'Multiple Shift Days': multiple_shift_days,
+                        'Single Shift Days': single_shift_days,
+                        'Mock Dates': ", ".join(mock_dates),
+                        'Multiple Shift Dates': ", ".join(multiple_shift_dates),
+                        'Single Shift Dates': ", ".join(single_shift_dates),
+                        'Mock Amount (₹)': mock_amount,
+                        'Multiple Shift Amount (₹)': multiple_amount,
+                        'Single Shift Amount (₹)': single_amount,
+                        'Area': io_master_info.get('AREA', ''),
+                        'Designation': io_master_info.get('DESIGNATION', ''),
+                        'Mobile': io_master_info.get('MOBILE', ''),
+                        'Email': io_master_info.get('EMAIL', ''),
+                        'Bank Name': io_master_info.get('BANK_NAME', ''),
+                        'Account Number': io_master_info.get('ACCOUNT_NUMBER', ''),
+                        'IFSC Code': io_master_info.get('IFSC_CODE', '')
+                    }
+                    
+                    io_summary_data.append(summary_row)
+                
+                # Create DataFrame and write to Excel
+                if io_summary_data:
+                    io_summary_df = pd.DataFrame(io_summary_data)
+                    io_summary_df.to_excel(writer, sheet_name='IO Summary', index=False)
+                    
+                    # Apply formatting
+                    worksheet = writer.sheets['IO Summary']
+                    apply_formatting(worksheet)
+            
+            # ============================================
+            # C. EY PERSONNEL REPORT SHEET
+            # ============================================
+            if not ey_df.empty:
+                ey_report_data = []
+                
+                for (ey_person, date), group in ey_df.groupby(['EY Personnel', 'Date']):
+                    first_row = group.iloc[0]
+                    
+                    # Get venues for this day
+                    venues = sorted(group['Venue'].unique())
+                    venues_str = ", ".join(venues)
+                    
+                    # Calculate shift details
+                    total_shifts = len(group)
+                    shift_list = sorted(group['Shift'].unique())
+                    shift_details = ", ".join(shift_list)
+                    
+                    # Get rate and amount
+                    rate = first_row.get('Rate (₹)', st.session_state.remuneration_rates['ey_personnel'])
+                    amount = rate  # Per day rate
+                    
+                    # Get reference info
+                    order_no = first_row.get('Order No.', '')
+                    page_no = first_row.get('Page No.', '')
+                    
+                    ey_report_row = {
+                        'EY Personnel': ey_person,
+                        'Venues': venues_str,
+                        'Date': date,
+                        'Total Shifts': total_shifts,
+                        'Shift Details': shift_details,
+                        'Mock Test': 'No',
+                        'Amount (₹)': amount,
+                        'Rate Type': 'Per Day',
+                        'Order No.': order_no,
+                        'Page No.': page_no
+                    }
+                    
+                    ey_report_data.append(ey_report_row)
+                
+                # Create DataFrame and write to Excel
+                if ey_report_data:
+                    ey_report_df = pd.DataFrame(ey_report_data)
+                    ey_report_df.to_excel(writer, sheet_name='EY Personnel Report', index=False)
+                    
+                    # Apply formatting
+                    worksheet = writer.sheets['EY Personnel Report']
+                    apply_formatting(worksheet)
+            
+            # ============================================
+            # D. EY SUMMARY SHEET
+            # ============================================
+            if not ey_df.empty:
+                ey_summary_data = []
+                
+                for ey_person in ey_df['EY Personnel'].unique():
+                    ey_person_data = ey_df[ey_df['EY Personnel'] == ey_person]
+                    first_row = ey_person_data.iloc[0]
+                    
+                    # Calculate statistics
+                    total_venues = ey_person_data['Venue'].nunique()
+                    total_days = ey_person_data['Date'].nunique()
+                    total_shifts = len(ey_person_data)
+                    
+                    # Get venues list
+                    venues_list = sorted(ey_person_data['Venue'].unique())
+                    venues_str = ", ".join(venues_list)
+                    
+                    # Get dates list
+                    dates_list = sorted(ey_person_data['Date'].unique())
+                    dates_str = ", ".join(dates_list)
+                    
+                    # Calculate amount
+                    rate = first_row.get('Rate (₹)', st.session_state.remuneration_rates['ey_personnel'])
+                    total_amount = total_days * rate
+                    
+                    # Get reference info
+                    order_no = first_row.get('Order No.', '')
+                    page_no = first_row.get('Page No.', '')
+                    
+                    ey_summary_row = {
+                        'EY Personnel': ey_person,
+                        'Venues': venues_str,
+                        'Total Amount (₹)': total_amount,
+                        'Total Days': total_days,
+                        'Total Shifts': total_shifts,
+                        'Order No.': order_no,
+                        'Page No.': page_no,
+                        'Rate per Day (₹)': rate,
+                        'Dates': dates_str
+                    }
+                    
+                    ey_summary_data.append(ey_summary_row)
+                
+                # Create DataFrame and write to Excel
+                if ey_summary_data:
+                    ey_summary_df = pd.DataFrame(ey_summary_data)
+                    ey_summary_df.to_excel(writer, sheet_name='EY Summary', index=False)
+                    
+                    # Apply formatting
+                    worksheet = writer.sheets['EY Summary']
+                    apply_formatting(worksheet)
+            
+            # ============================================
+            # E. DELETED RECORDS SHEET
+            # ============================================
+            if st.session_state.deleted_records:
+                deleted_df = pd.DataFrame(st.session_state.deleted_records)
+                deleted_df.to_excel(writer, sheet_name='Deleted Records', index=False)
+                
+                # Apply formatting
+                worksheet = writer.sheets['Deleted Records']
+                apply_formatting(worksheet)
+            
+            # ============================================
+            # F. RATES SHEET
+            # ============================================
+            rates_data = {
+                'Category': ['Multiple Shifts', 'Single Shift', 'Mock Test', 'EY Personnel'],
+                'Amount (₹)': [
+                    st.session_state.remuneration_rates['multiple_shifts'],
+                    st.session_state.remuneration_rates['single_shift'],
+                    st.session_state.remuneration_rates['mock_test'],
+                    st.session_state.remuneration_rates['ey_personnel']
+                ],
+                'Description': [
+                    'For assignments with multiple shifts on same day',
+                    'For assignments with single shift',
+                    'For mock test assignments',
+                    'Daily rate for EY personnel'
+                ]
+            }
+            
+            rates_df = pd.DataFrame(rates_data)
+            rates_df.to_excel(writer, sheet_name='Rates', index=False)
+            
+            # Apply formatting
+            worksheet = writer.sheets['Rates']
+            apply_formatting(worksheet)
+            
+            # ============================================
+            # Auto-adjust column widths
+            # ============================================
+            for sheet_name in writer.sheets:
+                worksheet = writer.sheets[sheet_name]
+                for column in worksheet.columns:
+                    max_length = 0
+                    column_letter = get_column_letter(column[0].column)
+                    
+                    for cell in column:
+                        try:
+                            if len(str(cell.value)) > max_length:
+                                max_length = len(str(cell.value))
+                        except:
+                            pass
+                    
+                    adjusted_width = min(max_length + 2, 50)
+                    worksheet.column_dimensions[column_letter].width = adjusted_width
+        
+        output.seek(0)
+        return output
+    
+    except Exception as e:
+        st.error(f"Error generating remuneration report: {str(e)}")
+        logging.error(f"Remuneration report generation error: {str(e)}")
+        return None
+
+def apply_formatting(worksheet):
+    """Apply formatting to Excel worksheet"""
+    # Define styles
+    header_fill = PatternFill(start_color="4169E1", end_color="4169E1", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True, size=12)
+    header_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    
+    data_font = Font(size=11)
+    data_alignment = Alignment(vertical="center", wrap_text=True)
+    border = Border(
+        left=Side(border_style="thin", color="000000"),
+        right=Side(border_style="thin", color="000000"),
+        top=Side(border_style="thin", color="000000"),
+        bottom=Side(border_style="thin", color="000000")
+    )
+    
+    # Apply header formatting
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = header_alignment
+        cell.border = border
+    
+    # Apply data formatting
+    for row in worksheet.iter_rows(min_row=2):
+        for cell in row:
+            cell.font = data_font
+            cell.alignment = data_alignment
+            cell.border = border
+            
+            # Format numeric cells
+            if isinstance(cell.value, (int, float)):
+                cell.number_format = '#,##0'
+    
+    # Freeze header row
+    worksheet.freeze_panes = 'A2'
+
+# ============================================================================
+# ENHANCED DATE SELECTION COMPONENT
+# ============================================================================
+
+def create_date_selector(venue_data, selected_venue):
+    """Create enhanced date selection interface with color coding"""
+    if venue_data.empty:
+        st.warning(f"No data found for venue: {selected_venue}")
+        return []
+    
+    # Get unique dates
+    unique_dates = sorted(venue_data['DATE'].dropna().unique())
+    
+    if not unique_dates:
+        st.warning(f"No dates available for {selected_venue}")
+        return []
+    
+    st.write(f"**Available dates for {selected_venue}:**")
+    
+    # Initialize date selection state if not exists
+    if 'date_selection_state' not in st.session_state:
+        st.session_state.date_selection_state = {}
+    
+    if 'expanded_dates' not in st.session_state:
+        st.session_state.expanded_dates = {}
+    
+    # Get venue key for state management
+    venue_key = f"{st.session_state.current_exam_key}_{selected_venue}"
+    if venue_key not in st.session_state.date_selection_state:
+        st.session_state.date_selection_state[venue_key] = {}
+    
+    if venue_key not in st.session_state.expanded_dates:
+        st.session_state.expanded_dates[venue_key] = {}
+    
+    selected_date_shifts = []
+    
+    for date_str in unique_dates:
+        # Get shifts for this date
+        date_shifts_data = venue_data[venue_data['DATE'] == date_str]
+        date_shifts = date_shifts_data['SHIFT'].unique()
+        
+        # Convert to strings and filter
+        date_shifts = [str(shift) for shift in date_shifts if pd.notna(shift) and str(shift) != '']
+        
+        if not date_shifts:
+            continue
+        
+        # Initialize date state if not exists
+        date_key = f"{venue_key}_{date_str}"
+        if date_key not in st.session_state.date_selection_state[venue_key]:
+            st.session_state.date_selection_state[venue_key][date_key] = {
+                'all_selected': False,
+                'shifts': {shift: False for shift in date_shifts}
+            }
+        
+        if date_str not in st.session_state.expanded_dates[venue_key]:
+            st.session_state.expanded_dates[venue_key][date_str] = False
+        
+        # Get current state
+        date_state = st.session_state.date_selection_state[venue_key][date_key]
+        is_expanded = st.session_state.expanded_dates[venue_key][date_str]
+        
+        # Calculate selection status
+        selected_shifts = [shift for shift, selected in date_state['shifts'].items() if selected]
+        all_selected = len(selected_shifts) == len(date_shifts)
+        partially_selected = len(selected_shifts) > 0 and not all_selected
+        none_selected = len(selected_shifts) == 0
+        
+        # Determine color based on selection
+        if all_selected:
+            bg_color = "#4CAF50"  # Green
+            border_color = "#388E3C"
+            status_text = "✓ All Selected"
+            emoji = "🟢"
+        elif partially_selected:
+            bg_color = "#FF9800"  # Orange
+            border_color = "#F57C00"
+            status_text = f"✓ {len(selected_shifts)}/{len(date_shifts)} Selected"
+            emoji = "🟠"
+        else:
+            bg_color = "#FFEB3B"  # Yellow
+            border_color = "#FBC02D"
+            status_text = "Not Selected"
+            emoji = "🟡"
+        
+        # Create date header with selection status
+        col1, col2, col3 = st.columns([3, 2, 1])
+        
+        with col1:
+            # Create a styled date header
+            st.markdown(f"""
+                <div style="
+                    background-color: {bg_color};
+                    color: #333;
+                    padding: 10px 15px;
+                    border-radius: 8px;
+                    border: 2px solid {border_color};
+                    margin: 5px 0;
+                    cursor: pointer;
+                    font-weight: bold;
+                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+                ">
+                {emoji} <strong>{date_str}</strong> - {status_text}
+                </div>
+            """, unsafe_allow_html=True)
+        
+        with col2:
+            # Single click to select all
+            if st.button(f"🎯 Select All", key=f"select_all_{date_key}", 
+                        use_container_width=True):
+                # Toggle all shifts
+                if all_selected:
+                    # Deselect all
+                    for shift in date_shifts:
+                        date_state['shifts'][shift] = False
+                else:
+                    # Select all
+                    for shift in date_shifts:
+                        date_state['shifts'][shift] = True
+                st.rerun()
+        
+        with col3:
+            # Toggle expand/collapse
+            expand_label = "📖 Show Shifts" if not is_expanded else "📕 Hide Shifts"
+            if st.button(expand_label, key=f"expand_{date_key}", 
+                        use_container_width=True):
+                st.session_state.expanded_dates[venue_key][date_str] = not is_expanded
+                st.rerun()
+        
+        # Show shift selection if expanded
+        if is_expanded:
+            st.markdown("**Select Shifts:**")
+            
+            # Create columns for shifts
+            shift_cols = st.columns(min(4, len(date_shifts)))
+            
+            for idx, shift in enumerate(sorted(date_shifts)):
+                col_idx = idx % len(shift_cols)
+                with shift_cols[col_idx]:
+                    shift_selected = st.checkbox(
+                        f"⏰ {shift}",
+                        value=date_state['shifts'][shift],
+                        key=f"shift_{date_key}_{shift}"
+                    )
+                    date_state['shifts'][shift] = shift_selected
+            
+            st.markdown("---")
+        
+        # Add selected shifts to result
+        for shift, selected in date_state['shifts'].items():
+            if selected:
+                selected_date_shifts.append({
+                    'date': date_str,
+                    'shift': shift,
+                    'is_mock': False
+                })
+    
+    return selected_date_shifts
 
 # ============================================================================
 # DASHBOARD MODULE
@@ -899,6 +1876,7 @@ def show_exam_management():
                     'exam_data': st.session_state.exam_data,
                     'allocation_references': st.session_state.allocation_references,
                     'remuneration_rates': st.session_state.remuneration_rates,
+                    'deleted_records': st.session_state.deleted_records,
                     'export_timestamp': datetime.now().isoformat()
                 }
                 
@@ -941,165 +1919,6 @@ def show_exam_management():
     with col7:
         if st.button("📊 View References", use_container_width=True):
             show_allocation_references()
-
-# ============================================================================
-# ENHANCED DATE SELECTION COMPONENT
-# ============================================================================
-
-def create_date_selector(venue_data, selected_venue):
-    """Create enhanced date selection interface with color coding"""
-    if venue_data.empty:
-        st.warning(f"No data found for venue: {selected_venue}")
-        return []
-    
-    # Get unique dates
-    unique_dates = sorted(venue_data['DATE'].dropna().unique())
-    
-    if not unique_dates:
-        st.warning(f"No dates available for {selected_venue}")
-        return []
-    
-    st.write(f"**Available dates for {selected_venue}:**")
-    
-    # Initialize date selection state if not exists
-    if 'date_selection_state' not in st.session_state:
-        st.session_state.date_selection_state = {}
-    
-    if 'expanded_dates' not in st.session_state:
-        st.session_state.expanded_dates = {}
-    
-    # Get venue key for state management
-    venue_key = f"{st.session_state.current_exam_key}_{selected_venue}"
-    if venue_key not in st.session_state.date_selection_state:
-        st.session_state.date_selection_state[venue_key] = {}
-    
-    if venue_key not in st.session_state.expanded_dates:
-        st.session_state.expanded_dates[venue_key] = {}
-    
-    selected_date_shifts = []
-    
-    for date_str in unique_dates:
-        # Get shifts for this date
-        date_shifts_data = venue_data[venue_data['DATE'] == date_str]
-        date_shifts = date_shifts_data['SHIFT'].unique()
-        
-        # Convert to strings and filter
-        date_shifts = [str(shift) for shift in date_shifts if pd.notna(shift) and str(shift) != '']
-        
-        if not date_shifts:
-            continue
-        
-        # Initialize date state if not exists
-        date_key = f"{venue_key}_{date_str}"
-        if date_key not in st.session_state.date_selection_state[venue_key]:
-            st.session_state.date_selection_state[venue_key][date_key] = {
-                'all_selected': False,
-                'shifts': {shift: False for shift in date_shifts}
-            }
-        
-        if date_str not in st.session_state.expanded_dates[venue_key]:
-            st.session_state.expanded_dates[venue_key][date_str] = False
-        
-        # Get current state
-        date_state = st.session_state.date_selection_state[venue_key][date_key]
-        is_expanded = st.session_state.expanded_dates[venue_key][date_str]
-        
-        # Calculate selection status
-        selected_shifts = [shift for shift, selected in date_state['shifts'].items() if selected]
-        all_selected = len(selected_shifts) == len(date_shifts)
-        partially_selected = len(selected_shifts) > 0 and not all_selected
-        none_selected = len(selected_shifts) == 0
-        
-        # Determine color based on selection
-        if all_selected:
-            bg_color = "#4CAF50"  # Green
-            border_color = "#388E3C"
-            status_text = "✓ All Selected"
-            emoji = "🟢"
-        elif partially_selected:
-            bg_color = "#FF9800"  # Orange
-            border_color = "#F57C00"
-            status_text = f"✓ {len(selected_shifts)}/{len(date_shifts)} Selected"
-            emoji = "🟠"
-        else:
-            bg_color = "#FFEB3B"  # Yellow
-            border_color = "#FBC02D"
-            status_text = "Not Selected"
-            emoji = "🟡"
-        
-        # Create date header with selection status
-        col1, col2, col3 = st.columns([3, 2, 1])
-        
-        with col1:
-            # Create a styled date header
-            st.markdown(f"""
-                <div style="
-                    background-color: {bg_color};
-                    color: #333;
-                    padding: 10px 15px;
-                    border-radius: 8px;
-                    border: 2px solid {border_color};
-                    margin: 5px 0;
-                    cursor: pointer;
-                    font-weight: bold;
-                    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-                ">
-                {emoji} <strong>{date_str}</strong> - {status_text}
-                </div>
-            """, unsafe_allow_html=True)
-        
-        with col2:
-            # Single click to select all
-            if st.button(f"🎯 Select All", key=f"select_all_{date_key}", 
-                        use_container_width=True):
-                # Toggle all shifts
-                if all_selected:
-                    # Deselect all
-                    for shift in date_shifts:
-                        date_state['shifts'][shift] = False
-                else:
-                    # Select all
-                    for shift in date_shifts:
-                        date_state['shifts'][shift] = True
-                st.rerun()
-        
-        with col3:
-            # Toggle expand/collapse
-            expand_label = "📖 Show Shifts" if not is_expanded else "📕 Hide Shifts"
-            if st.button(expand_label, key=f"expand_{date_key}", 
-                        use_container_width=True):
-                st.session_state.expanded_dates[venue_key][date_str] = not is_expanded
-                st.rerun()
-        
-        # Show shift selection if expanded
-        if is_expanded:
-            st.markdown("**Select Shifts:**")
-            
-            # Create columns for shifts
-            shift_cols = st.columns(min(4, len(date_shifts)))
-            
-            for idx, shift in enumerate(sorted(date_shifts)):
-                col_idx = idx % len(shift_cols)
-                with shift_cols[col_idx]:
-                    shift_selected = st.checkbox(
-                        f"⏰ {shift}",
-                        value=date_state['shifts'][shift],
-                        key=f"shift_{date_key}_{shift}"
-                    )
-                    date_state['shifts'][shift] = shift_selected
-            
-            st.markdown("---")
-        
-        # Add selected shifts to result
-        for shift, selected in date_state['shifts'].items():
-            if selected:
-                selected_date_shifts.append({
-                    'date': date_str,
-                    'shift': shift,
-                    'is_mock': False
-                })
-    
-    return selected_date_shifts
 
 # ============================================================================
 # CENTRE COORDINATOR MODULE - FIXED
@@ -1818,7 +2637,7 @@ def show_ey_personnel():
             st.info("No EY allocations for current exam")
 
 # ============================================================================
-# REPORTS MODULE
+# REPORTS MODULE - ENHANCED
 # ============================================================================
 
 def show_reports():
@@ -1859,118 +2678,75 @@ def show_allocation_reports():
         st.info("No allocation data available")
         return
     
-    # IO Allocations
-    if st.session_state.allocation:
-        st.markdown("#### 👨‍💼 Centre Coordinator Allocations")
+    col_report1, col_report2 = st.columns(2)
+    
+    with col_report1:
+        st.markdown("#### 📊 Generate Allocation Report")
+        st.write("This report includes all allocation data with multiple sheets:")
+        st.markdown("""
+        - **IO Allocations:** Raw allocation data
+        - **EY Allocations:** EY personnel data
+        - **IO Summary:** Per-IO statistics
+        - **Venue-IO Shifts:** Venue-centric view
+        - **Venue-Role Summary:** Counts per venue
+        - **Date Summary:** Daily statistics
+        - **EY Summary:** EY personnel statistics
+        - **Deleted Records:** Audit trail
+        - **Rates:** Current remuneration rates
+        """)
         
-        alloc_df = pd.DataFrame(st.session_state.allocation)
-        
-        # Filter by current exam if available
-        if st.session_state.current_exam_key:
-            current_alloc = alloc_df[alloc_df['Exam'] == st.session_state.current_exam_key]
-            if not current_alloc.empty:
-                st.dataframe(
-                    current_alloc[['Sl. No.', 'IO Name', 'Venue', 'Date', 'Shift', 'Role', 'Mock Test']],
-                    use_container_width=True,
-                    height=300
-                )
-            else:
-                st.info("No allocations for current exam")
-        
-        # Summary statistics
-        col_sum1, col_sum2, col_sum3 = st.columns(3)
-        with col_sum1:
-            total_io = len(alloc_df)
-            st.metric("Total IO Allocations", total_io)
-        with col_sum2:
-            unique_io = alloc_df['IO Name'].nunique()
-            st.metric("Unique IOs", unique_io)
-        with col_sum3:
-            total_days = alloc_df['Date'].nunique()
-            st.metric("Total Days", total_days)
-        
-        # Export options
-        col_exp1, col_exp2 = st.columns(2)
-        with col_exp1:
-            if st.button("📤 Export IO Allocations (CSV)", use_container_width=True):
-                csv = alloc_df.to_csv(index=False)
+        if st.button("📤 Generate Allocation Report", use_container_width=True):
+            excel_file = export_to_excel()
+            if excel_file:
                 st.download_button(
-                    label="⬇️ Download CSV",
-                    data=csv,
-                    file_name=f"io_allocations_full_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-        
-        with col_exp2:
-            if st.button("📊 Export IO Allocations (Excel)", use_container_width=True):
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    alloc_df.to_excel(writer, sheet_name='IO Allocations', index=False)
-                    
-                    # Add summary sheet
-                    summary_data = {
-                        'Metric': ['Total Allocations', 'Unique IOs', 'Total Days', 'Total Venues'],
-                        'Value': [
-                            len(alloc_df),
-                            alloc_df['IO Name'].nunique(),
-                            alloc_df['Date'].nunique(),
-                            alloc_df['Venue'].nunique()
-                        ]
-                    }
-                    pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
-                
-                output.seek(0)
-                
-                st.download_button(
-                    label="⬇️ Download Excel",
-                    data=output,
-                    file_name=f"io_allocations_full_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    label="⬇️ Download Allocation Report (Excel)",
+                    data=excel_file,
+                    file_name=f"allocation_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
-    
-    # EY Allocations
-    if st.session_state.ey_allocation:
-        st.markdown("---")
-        st.markdown("#### 👁️ EY Personnel Allocations")
-        
-        ey_df = pd.DataFrame(st.session_state.ey_allocation)
-        
-        # Filter by current exam if available
-        if st.session_state.current_exam_key:
-            current_ey = ey_df[ey_df['Exam'] == st.session_state.current_exam_key]
-            if not current_ey.empty:
-                st.dataframe(
-                    current_ey[['Sl. No.', 'EY Personnel', 'Venue', 'Date', 'Shift', 'Rate (₹)']],
-                    use_container_width=True,
-                    height=300
-                )
             else:
-                st.info("No EY allocations for current exam")
+                st.error("Failed to generate report")
+    
+    with col_report2:
+        st.markdown("#### 📈 View Data Preview")
         
-        # Summary statistics
-        col_ey1, col_ey2, col_ey3 = st.columns(3)
-        with col_ey1:
-            total_ey = len(ey_df)
-            st.metric("Total EY Allocations", total_ey)
-        with col_ey2:
-            unique_ey = ey_df['EY Personnel'].nunique()
-            st.metric("Unique EY Personnel", unique_ey)
-        with col_ey3:
-            total_cost = ey_df['Date'].nunique() * st.session_state.remuneration_rates['ey_personnel']
-            st.metric("Estimated Cost", f"₹{total_cost:,}")
+        if st.session_state.allocation:
+            alloc_df = pd.DataFrame(st.session_state.allocation)
+            
+            # Show summary statistics
+            col_stat1, col_stat2, col_stat3 = st.columns(3)
+            with col_stat1:
+                st.metric("Total IO Allocations", len(alloc_df))
+            with col_stat2:
+                st.metric("Unique IOs", alloc_df['IO Name'].nunique())
+            with col_stat3:
+                st.metric("Total Days", alloc_df['Date'].nunique())
+            
+            # Show preview
+            with st.expander("Preview IO Allocations"):
+                st.dataframe(
+                    alloc_df[['Sl. No.', 'IO Name', 'Venue', 'Date', 'Shift', 'Role', 'Mock Test']].head(10),
+                    use_container_width=True,
+                    hide_index=True
+                )
         
-        # Export options
-        if st.button("📤 Export EY Allocations", use_container_width=True):
-            csv = ey_df.to_csv(index=False)
-            st.download_button(
-                label="⬇️ Download CSV",
-                data=csv,
-                file_name=f"ey_allocations_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+        if st.session_state.ey_allocation:
+            st.markdown("##### EY Allocations")
+            ey_df = pd.DataFrame(st.session_state.ey_allocation)
+            
+            col_ey1, col_ey2 = st.columns(2)
+            with col_ey1:
+                st.metric("Total EY Allocations", len(ey_df))
+            with col_ey2:
+                st.metric("Unique EY Personnel", ey_df['EY Personnel'].nunique())
+            
+            with st.expander("Preview EY Allocations"):
+                st.dataframe(
+                    ey_df[['Sl. No.', 'EY Personnel', 'Venue', 'Date', 'Shift', 'Rate (₹)']].head(10),
+                    use_container_width=True,
+                    hide_index=True
+                )
 
 def show_remuneration_reports():
     """Display remuneration reports"""
@@ -1980,179 +2756,72 @@ def show_remuneration_reports():
         st.info("No allocation data available for remuneration calculation")
         return
     
-    # IO Remuneration Calculation
-    if st.session_state.allocation:
-        st.markdown("#### 👨‍💼 Centre Coordinator Remuneration")
+    col_report1, col_report2 = st.columns(2)
+    
+    with col_report1:
+        st.markdown("#### 💸 Generate Remuneration Report")
+        st.write("This report includes detailed remuneration calculations:")
+        st.markdown("""
+        - **IO Detailed Report:** Per-day calculations
+        - **IO Summary:** Aggregated IO remuneration
+        - **EY Personnel Report:** EY per-day calculations
+        - **EY Summary:** Aggregated EY remuneration
+        - **Deleted Records:** Audit trail
+        - **Rates:** Current remuneration rates
+        """)
         
-        alloc_df = pd.DataFrame(st.session_state.allocation)
-        
-        # Calculate remuneration
-        remuneration_data = []
-        for (io_name, date), group in alloc_df.groupby(['IO Name', 'Date']):
-            shifts = group['Shift'].nunique()
-            is_mock = any(group['Mock Test'])
-            venues = ", ".join(group['Venue'].unique())
-            
-            if is_mock:
-                amount = st.session_state.remuneration_rates['mock_test']
-                shift_type = "Mock Test"
+        if st.button("💰 Generate Remuneration Report", use_container_width=True):
+            excel_file = export_remuneration_report()
+            if excel_file:
+                st.download_button(
+                    label="⬇️ Download Remuneration Report (Excel)",
+                    data=excel_file,
+                    file_name=f"remuneration_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
             else:
-                if shifts > 1:
-                    amount = st.session_state.remuneration_rates['multiple_shifts']
-                    shift_type = "Multiple Shifts"
+                st.error("Failed to generate report")
+    
+    with col_report2:
+        st.markdown("#### 📊 Remuneration Preview")
+        
+        if st.session_state.allocation:
+            # Calculate IO remuneration
+            alloc_df = pd.DataFrame(st.session_state.allocation)
+            
+            # Calculate total IO remuneration
+            total_io_amount = 0
+            for (io_name, date), group in alloc_df.groupby(['IO Name', 'Date']):
+                shifts = len(group)
+                is_mock = any(group['Mock Test'])
+                
+                if is_mock:
+                    amount = st.session_state.remuneration_rates['mock_test']
                 else:
-                    amount = st.session_state.remuneration_rates['single_shift']
-                    shift_type = "Single Shift"
+                    if shifts > 1:
+                        amount = st.session_state.remuneration_rates['multiple_shifts']
+                    else:
+                        amount = st.session_state.remuneration_rates['single_shift']
+                
+                total_io_amount += amount
             
-            remuneration_data.append({
-                'IO Name': io_name,
-                'Date': date,
-                'Venues': venues,
-                'Total Shifts': shifts,
-                'Shift Type': shift_type,
-                'Mock Test': "Yes" if is_mock else "No",
-                'Amount (₹)': amount
-            })
-        
-        rem_df = pd.DataFrame(remuneration_data)
-        
-        if not rem_df.empty:
-            st.dataframe(rem_df, use_container_width=True)
+            col_rem1, col_rem2 = st.columns(2)
+            with col_rem1:
+                st.metric("Total IO Remuneration", f"₹{total_io_amount:,}")
             
-            # Total calculation
-            total_amount = rem_df['Amount (₹)'].sum()
-            total_days = rem_df['Date'].nunique()
-            total_ios = rem_df['IO Name'].nunique()
-            
-            col_tot1, col_tot2, col_tot3 = st.columns(3)
-            with col_tot1:
-                st.metric("Total IO Remuneration", f"₹{total_amount:,}")
-            with col_tot2:
-                st.metric("Total Days", total_days)
-            with col_tot3:
-                st.metric("Total IOs", total_ios)
-            
-            # Export
-            if st.button("📤 Export IO Remuneration Report", use_container_width=True):
-                csv = rem_df.to_csv(index=False)
-                st.download_button(
-                    label="⬇️ Download CSV",
-                    data=csv,
-                    file_name=f"io_remuneration_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-    
-    # EY Remuneration Calculation
-    if st.session_state.ey_allocation:
-        st.markdown("---")
-        st.markdown("#### 👁️ EY Personnel Remuneration")
-        
-        ey_df = pd.DataFrame(st.session_state.ey_allocation)
-        
-        # Calculate remuneration
-        ey_rem_data = []
-        for (ey_person, date), group in ey_df.groupby(['EY Personnel', 'Date']):
-            shifts = group['Shift'].nunique()
-            venues = ", ".join(group['Venue'].unique())
-            
-            amount = st.session_state.remuneration_rates['ey_personnel']
-            
-            ey_rem_data.append({
-                'EY Personnel': ey_person,
-                'Date': date,
-                'Venues': venues,
-                'Total Shifts': shifts,
-                'Amount (₹)': amount,
-                'Rate Type': 'Per Day'
-            })
-        
-        ey_rem_df = pd.DataFrame(ey_rem_data)
-        
-        if not ey_rem_df.empty:
-            st.dataframe(ey_rem_df, use_container_width=True)
-            
-            # Total calculation
-            total_ey_amount = ey_rem_df['Amount (₹)'].sum()
-            total_ey_days = ey_rem_df['Date'].nunique()
-            total_ey_personnel = ey_rem_df['EY Personnel'].nunique()
-            
-            col_ey1, col_ey2, col_ey3 = st.columns(3)
-            with col_ey1:
-                st.metric("Total EY Remuneration", f"₹{total_ey_amount:,}")
-            with col_ey2:
-                st.metric("Total Days", total_ey_days)
-            with col_ey3:
-                st.metric("Total EY Personnel", total_ey_personnel)
-            
-            # Export
-            if st.button("📤 Export EY Remuneration Report", use_container_width=True):
-                csv = ey_rem_df.to_csv(index=False)
-                st.download_button(
-                    label="⬇️ Download CSV",
-                    data=csv,
-                    file_name=f"ey_remuneration_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-    
-    # Combined Report
-    st.markdown("---")
-    st.markdown("### 📊 Combined Remuneration Report")
-    
-    if st.button("🔄 Generate Complete Remuneration Report", use_container_width=True):
-        # Create Excel file with all data
-        output = BytesIO()
-        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # IO Allocations
-            if st.session_state.allocation:
-                alloc_df = pd.DataFrame(st.session_state.allocation)
-                alloc_df.to_excel(writer, sheet_name='IO Allocations', index=False)
-            
-            # EY Allocations
+            # Calculate EY remuneration
             if st.session_state.ey_allocation:
                 ey_df = pd.DataFrame(st.session_state.ey_allocation)
-                ey_df.to_excel(writer, sheet_name='EY Allocations', index=False)
+                total_ey_days = ey_df['Date'].nunique()
+                total_ey_amount = total_ey_days * st.session_state.remuneration_rates['ey_personnel']
+                
+                with col_rem2:
+                    st.metric("Total EY Remuneration", f"₹{total_ey_amount:,}")
             
-            # IO Remuneration
-            if 'rem_df' in locals() and not rem_df.empty:
-                rem_df.to_excel(writer, sheet_name='IO Remuneration', index=False)
-            
-            # EY Remuneration
-            if 'ey_rem_df' in locals() and not ey_rem_df.empty:
-                ey_rem_df.to_excel(writer, sheet_name='EY Remuneration', index=False)
-            
-            # Rates
-            rates_data = pd.DataFrame([
-                {'Category': 'Multiple Shifts', 'Amount (₹)': st.session_state.remuneration_rates['multiple_shifts']},
-                {'Category': 'Single Shift', 'Amount (₹)': st.session_state.remuneration_rates['single_shift']},
-                {'Category': 'Mock Test', 'Amount (₹)': st.session_state.remuneration_rates['mock_test']},
-                {'Category': 'EY Personnel', 'Amount (₹)': st.session_state.remuneration_rates['ey_personnel']}
-            ])
-            rates_data.to_excel(writer, sheet_name='Rates', index=False)
-            
-            # Summary
-            summary_data = {
-                'Category': ['IO Allocations', 'EY Allocations', 'Total IO Remuneration', 'Total EY Remuneration', 'Grand Total'],
-                'Count': [
-                    len(st.session_state.allocation) if st.session_state.allocation else 0,
-                    len(st.session_state.ey_allocation) if st.session_state.ey_allocation else 0,
-                    total_amount if 'total_amount' in locals() else 0,
-                    total_ey_amount if 'total_ey_amount' in locals() else 0,
-                    (total_amount if 'total_amount' in locals() else 0) + (total_ey_amount if 'total_ey_amount' in locals() else 0)
-                ]
-            }
-            pd.DataFrame(summary_data).to_excel(writer, sheet_name='Summary', index=False)
-        
-        output.seek(0)
-        
-        st.download_button(
-            label="⬇️ Download Complete Report (Excel)",
-            data=output,
-            file_name=f"complete_remuneration_report_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True
-        )
+            # Grand total
+            grand_total = total_io_amount + (total_ey_amount if 'total_ey_amount' in locals() else 0)
+            st.metric("Grand Total", f"₹{grand_total:,}", delta=f"₹{grand_total:,}")
 
 def show_reference_reports():
     """Display allocation reference reports"""
