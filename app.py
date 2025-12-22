@@ -132,7 +132,7 @@ def initialize_session_state():
         st.session_state.ey_master_loaded = False
 
 # ============================================================================
-# DATA PERSISTENCE FUNCTIONS
+# DATA PERSISTENCE FUNCTIONS - FIXED
 # ============================================================================
 
 def load_all_data():
@@ -142,37 +142,76 @@ def load_all_data():
         if CONFIG_FILE.exists():
             with open(CONFIG_FILE, 'r') as f:
                 config = json.load(f)
-                if 'remuneration_rates' in config:
-                    st.session_state.remuneration_rates.update(config['remuneration_rates'])
+                st.session_state.remuneration_rates = config.get('remuneration_rates', DEFAULT_RATES.copy())
+                logging.info(f"Config loaded: {len(config)} items")
         
-        # Load exam data
+        # Load exam data - handle both old and new formats
         if DATA_FILE.exists():
             with open(DATA_FILE, 'r') as f:
-                st.session_state.exam_data = json.load(f)
+                exam_data = json.load(f)
+                # Convert loaded data to proper format
+                st.session_state.exam_data = {}
+                for exam_key, data in exam_data.items():
+                    if isinstance(data, dict):
+                        # New format: {'io_allocations': [], 'ey_allocations': []}
+                        st.session_state.exam_data[exam_key] = data
+                    else:
+                        # Old format: direct list of allocations
+                        st.session_state.exam_data[exam_key] = {
+                            'io_allocations': data,
+                            'ey_allocations': []
+                        }
+                logging.info(f"Exam data loaded: {len(exam_data)} exams")
         
         # Load reference data
         if REFERENCE_FILE.exists():
             with open(REFERENCE_FILE, 'r') as f:
-                st.session_state.allocation_references = json.load(f)
+                ref_data = json.load(f)
+                st.session_state.allocation_references = ref_data
+                logging.info(f"References loaded: {len(ref_data)} items")
         
         # Load deleted records
         if DELETED_RECORDS_FILE.exists():
             with open(DELETED_RECORDS_FILE, 'r') as f:
-                st.session_state.deleted_records = json.load(f)
+                deleted_data = json.load(f)
+                st.session_state.deleted_records = deleted_data
+                logging.info(f"Deleted records loaded: {len(deleted_data)} items")
         
-        logging.info("All data loaded successfully")
+        # Load current allocations from current exam
+        if st.session_state.current_exam_key and st.session_state.current_exam_key in st.session_state.exam_data:
+            exam_data = st.session_state.exam_data[st.session_state.current_exam_key]
+            st.session_state.allocation = exam_data.get('io_allocations', [])
+            st.session_state.ey_allocation = exam_data.get('ey_allocations', [])
+            logging.info(f"Current allocations loaded: {len(st.session_state.allocation)} IO, {len(st.session_state.ey_allocation)} EY")
+        
         return True
     except Exception as e:
         logging.error(f"Error loading data: {str(e)}")
+        st.error(f"Error loading data: {str(e)}")
         return False
 
 def save_all_data():
     """Save all data to files"""
     try:
+        # Update current exam data before saving
+        if st.session_state.current_exam_key:
+            if st.session_state.current_exam_key not in st.session_state.exam_data:
+                st.session_state.exam_data[st.session_state.current_exam_key] = {
+                    'io_allocations': [],
+                    'ey_allocations': []
+                }
+            
+            # Update allocations for current exam
+            st.session_state.exam_data[st.session_state.current_exam_key]['io_allocations'] = st.session_state.allocation
+            st.session_state.exam_data[st.session_state.current_exam_key]['ey_allocations'] = st.session_state.ey_allocation
+        
         # Save config
-        config = {'remuneration_rates': st.session_state.remuneration_rates}
+        config = {
+            'remuneration_rates': st.session_state.remuneration_rates,
+            'last_saved': datetime.now().isoformat()
+        }
         with open(CONFIG_FILE, 'w') as f:
-            json.dump(config, f, indent=4)
+            json.dump(config, f, indent=4, default=str)
         
         # Save exam data
         with open(DATA_FILE, 'w') as f:
@@ -180,7 +219,7 @@ def save_all_data():
         
         # Save reference data
         with open(REFERENCE_FILE, 'w') as f:
-            json.dump(st.session_state.allocation_references, f, indent=4)
+            json.dump(st.session_state.allocation_references, f, indent=4, default=str)
         
         # Save deleted records
         with open(DELETED_RECORDS_FILE, 'w') as f:
@@ -206,12 +245,15 @@ def create_backup(description=""):
             backup_name += f"_{description.replace(' ', '_')}"
         backup_file = BACKUP_DIR / f"{backup_name}.json"
         
+        # Get current data
         backup_data = {
             'timestamp': datetime.now().isoformat(),
+            'description': description,
             'exam_data': st.session_state.exam_data,
             'allocation_references': st.session_state.allocation_references,
             'remuneration_rates': st.session_state.remuneration_rates,
-            'deleted_records': st.session_state.deleted_records
+            'deleted_records': st.session_state.deleted_records,
+            'current_exam_key': st.session_state.current_exam_key
         }
         
         with open(backup_file, 'w') as f:
@@ -234,11 +276,17 @@ def restore_from_backup(backup_file):
         st.session_state.allocation_references = backup_data.get('allocation_references', {})
         st.session_state.remuneration_rates = backup_data.get('remuneration_rates', DEFAULT_RATES.copy())
         st.session_state.deleted_records = backup_data.get('deleted_records', [])
+        st.session_state.current_exam_key = backup_data.get('current_exam_key', "")
         
         # Clear current allocations
         st.session_state.allocation = []
         st.session_state.ey_allocation = []
-        st.session_state.current_exam_key = ""
+        
+        # Load allocations if exam key exists
+        if st.session_state.current_exam_key and st.session_state.current_exam_key in st.session_state.exam_data:
+            exam_data = st.session_state.exam_data[st.session_state.current_exam_key]
+            st.session_state.allocation = exam_data.get('io_allocations', [])
+            st.session_state.ey_allocation = exam_data.get('ey_allocations', [])
         
         # Save restored data
         save_all_data()
@@ -464,7 +512,7 @@ def check_allocation_conflict(person_name, date, shift, venue, role, allocation_
     return False, ""
 
 # ============================================================================
-# REFERENCE MANAGEMENT
+# REFERENCE MANAGEMENT - FIXED
 # ============================================================================
 
 def get_or_create_reference(allocation_type):
@@ -492,15 +540,14 @@ def get_or_create_reference(allocation_type):
         
         with col2:
             if st.button(f"🆕 Create New Reference", key=f"new_ref_{allocation_type}"):
-                # Clear the choice and show form
-                st.session_state[f"show_ref_form_{allocation_type}"] = True
+                st.session_state[f"creating_new_ref_{allocation_type}"] = True
                 st.rerun()
         
         # Display existing reference info
         st.info(f"**Existing Reference:** Order No. {existing_ref.get('order_no', 'N/A')}, Page No. {existing_ref.get('page_no', 'N/A')}")
         
-        # If user clicked new, show form
-        if f"show_ref_form_{allocation_type}" in st.session_state:
+        # Check if we're creating new reference
+        if f"creating_new_ref_{allocation_type}" in st.session_state:
             return create_reference_form(allocation_type)
         
         return None
@@ -509,7 +556,9 @@ def get_or_create_reference(allocation_type):
 
 def create_reference_form(allocation_type):
     """Create a form for entering reference details"""
-    with st.expander(f"📋 Enter Reference for {allocation_type}", expanded=True):
+    with st.container():
+        st.markdown(f"### 📋 Enter Reference for {allocation_type}")
+        
         order_no = st.text_input("Order No.:", key=f"order_no_{allocation_type}")
         page_no = st.text_input("Page No.:", key=f"page_no_{allocation_type}")
         remarks = st.text_area("Remarks (Optional):", key=f"remarks_{allocation_type}", height=100)
@@ -533,19 +582,21 @@ def create_reference_form(allocation_type):
                     save_all_data()
                     st.success("✅ Reference saved successfully!")
                     
-                    # Clear form flag
-                    if f"show_ref_form_{allocation_type}" in st.session_state:
-                        del st.session_state[f"show_ref_form_{allocation_type}"]
+                    # Clear creating flag
+                    if f"creating_new_ref_{allocation_type}" in st.session_state:
+                        del st.session_state[f"creating_new_ref_{allocation_type}"]
                     
+                    st.rerun()
                     return st.session_state.allocation_references[exam_key][allocation_type]
                 else:
                     st.error("Please enter both Order No. and Page No.")
         
         with col2:
             if st.button("❌ Cancel", key=f"cancel_ref_{allocation_type}"):
-                # Clear form flag
-                if f"show_ref_form_{allocation_type}" in st.session_state:
-                    del st.session_state[f"show_ref_form_{allocation_type}"]
+                # Clear creating flag
+                if f"creating_new_ref_{allocation_type}" in st.session_state:
+                    del st.session_state[f"creating_new_ref_{allocation_type}"]
+                st.rerun()
                 return None
     
     return None
@@ -668,7 +719,7 @@ def show_dashboard():
             st.warning("⚠️ System is ready but no records found")
 
 # ============================================================================
-# EXAM MANAGEMENT MODULE
+# EXAM MANAGEMENT MODULE - FIXED
 # ============================================================================
 
 def show_exam_management():
@@ -1052,7 +1103,7 @@ def create_date_selector(venue_data, selected_venue):
     return selected_date_shifts
 
 # ============================================================================
-# CENTRE COORDINATOR MODULE
+# CENTRE COORDINATOR MODULE - FIXED
 # ============================================================================
 
 def show_centre_coordinator():
@@ -1078,14 +1129,14 @@ def show_centre_coordinator():
                                                      help="Enable for mock test allocations")
     
     with col_mode2:
-        st.session_state.ey_allocation_mode = st.checkbox("👁️ EY Personnel Mode", 
-                                                         value=st.session_state.ey_allocation_mode,
-                                                         help="Switch to EY Personnel allocation",
-                                                         disabled=True)
-    
-    if st.session_state.ey_allocation_mode:
-        st.info("Switch to Centre Coordinator mode using the sidebar")
-        return
+        if st.checkbox("👁️ EY Personnel Mode", 
+                      value=st.session_state.ey_allocation_mode,
+                      help="Switch to EY Personnel allocation"):
+            st.session_state.ey_allocation_mode = True
+            st.session_state.menu = "ey"
+            st.rerun()
+        else:
+            st.session_state.ey_allocation_mode = False
     
     # Master Data Loading Section
     st.markdown("### 📁 Master Data Management")
@@ -1192,8 +1243,10 @@ def show_centre_coordinator():
         selected_venue = st.selectbox("Select Venue:", 
                                      venues,
                                      key="venue_select",
-                                     index=venues.index(st.session_state.selected_venue) 
-                                     if st.session_state.selected_venue in venues else 0)
+                                     index=0 if len(venues) == 0 else (
+                                         venues.index(st.session_state.selected_venue) 
+                                         if st.session_state.selected_venue in venues else 0
+                                     ))
         
         if selected_venue != st.session_state.selected_venue:
             st.session_state.selected_venue = selected_venue
@@ -1323,67 +1376,86 @@ def show_centre_coordinator():
                     # Allocation button
                     if st.session_state.selected_dates:
                         if st.button(f"✅ Allocate {name}", key=f"alloc_btn_{idx}"):
-                            # Get reference
-                            ref_data = get_or_create_reference(role)
-                            if ref_data:
-                                allocation_count = 0
-                                conflicts = []
-                                
-                                for date_info in st.session_state.selected_dates:
-                                    # Check for conflicts
-                                    conflict, message = check_allocation_conflict(
-                                        name, date_info['date'], date_info['shift'], 
-                                        selected_venue, role, "IO"
-                                    )
-                                    
-                                    if conflict:
-                                        conflicts.append(message)
-                                        continue
-                                    
-                                    # Create allocation
-                                    allocation = {
-                                        'Sl. No.': len(st.session_state.allocation) + allocation_count + 1,
-                                        'Venue': selected_venue,
-                                        'Date': date_info['date'],
-                                        'Shift': date_info['shift'],
-                                        'IO Name': name,
-                                        'Area': area,
-                                        'Role': role,
-                                        'Mock Test': date_info['is_mock'],
-                                        'Exam': st.session_state.current_exam_key,
-                                        'Order No.': ref_data['order_no'],
-                                        'Page No.': ref_data['page_no'],
-                                        'Reference Remarks': ref_data.get('remarks', ''),
-                                        'Timestamp': datetime.now().isoformat()
-                                    }
-                                    
-                                    st.session_state.allocation.append(allocation)
-                                    allocation_count += 1
-                                
-                                # Update exam data
-                                exam_key = st.session_state.current_exam_key
-                                if exam_key not in st.session_state.exam_data:
-                                    st.session_state.exam_data[exam_key] = {}
-                                
-                                st.session_state.exam_data[exam_key]['io_allocations'] = st.session_state.allocation
-                                
-                                # Save data
-                                save_all_data()
-                                
-                                if allocation_count > 0:
-                                    success_msg = f"✅ Allocated {name} to {allocation_count} date-shift combination(s)"
-                                    if conflicts:
-                                        success_msg += f"\n\n⚠️ {len(conflicts)} conflict(s) prevented allocation"
-                                    st.success(success_msg)
-                                    st.rerun()
-                                else:
-                                    st.error("❌ No allocations made due to conflicts")
-                            else:
-                                st.warning("Allocation cancelled - no reference provided")
+                            # Get reference first
+                            st.session_state.current_allocation_person = name
+                            st.session_state.current_allocation_area = area
+                            st.session_state.current_allocation_role = role
+                            st.session_state.current_allocation_type = "IO"
+                            st.rerun()
                     else:
                         st.info("Select dates above to enable allocation")
     else:
         st.warning("No Centre Coordinators found matching the criteria")
+    
+    # Handle allocation after reference selection
+    if hasattr(st.session_state, 'current_allocation_person'):
+        # Show reference selection
+        ref_data = get_or_create_reference(st.session_state.current_allocation_role)
+        
+        if ref_data is not None:
+            # Perform allocation
+            allocation_count = 0
+            conflicts = []
+            
+            for date_info in st.session_state.selected_dates:
+                # Check for conflicts
+                conflict, message = check_allocation_conflict(
+                    st.session_state.current_allocation_person, 
+                    date_info['date'], 
+                    date_info['shift'], 
+                    selected_venue, 
+                    st.session_state.current_allocation_role, 
+                    st.session_state.current_allocation_type
+                )
+                
+                if conflict:
+                    conflicts.append(message)
+                    continue
+                
+                # Create allocation
+                allocation = {
+                    'Sl. No.': len(st.session_state.allocation) + allocation_count + 1,
+                    'Venue': selected_venue,
+                    'Date': date_info['date'],
+                    'Shift': date_info['shift'],
+                    'IO Name': st.session_state.current_allocation_person,
+                    'Area': st.session_state.current_allocation_area,
+                    'Role': st.session_state.current_allocation_role,
+                    'Mock Test': date_info['is_mock'],
+                    'Exam': st.session_state.current_exam_key,
+                    'Order No.': ref_data['order_no'],
+                    'Page No.': ref_data['page_no'],
+                    'Reference Remarks': ref_data.get('remarks', ''),
+                    'Timestamp': datetime.now().isoformat()
+                }
+                
+                st.session_state.allocation.append(allocation)
+                allocation_count += 1
+            
+            # Update exam data
+            exam_key = st.session_state.current_exam_key
+            if exam_key not in st.session_state.exam_data:
+                st.session_state.exam_data[exam_key] = {}
+            
+            st.session_state.exam_data[exam_key]['io_allocations'] = st.session_state.allocation
+            
+            # Save data
+            save_all_data()
+            
+            # Clear allocation state
+            del st.session_state.current_allocation_person
+            del st.session_state.current_allocation_area
+            del st.session_state.current_allocation_role
+            del st.session_state.current_allocation_type
+            
+            if allocation_count > 0:
+                success_msg = f"✅ Allocated {st.session_state.current_allocation_person} to {allocation_count} date-shift combination(s)"
+                if conflicts:
+                    success_msg += f"\n\n⚠️ {len(conflicts)} conflict(s) prevented allocation"
+                st.success(success_msg)
+                st.rerun()
+            else:
+                st.error("❌ No allocations made due to conflicts")
     
     # Current Allocations Display
     if st.session_state.allocation:
@@ -1435,7 +1507,7 @@ def show_centre_coordinator():
             st.info("No allocations for current exam")
 
 # ============================================================================
-# EY PERSONNEL MODULE
+# EY PERSONNEL MODULE - FIXED
 # ============================================================================
 
 def show_ey_personnel():
@@ -1452,6 +1524,14 @@ def show_ey_personnel():
     if not st.session_state.current_exam_key:
         st.error("⚠️ Please select or create an exam first from Exam Management")
         return
+    
+    # Mode switch
+    col_mode1, col_mode2 = st.columns(2)
+    with col_mode1:
+        if st.checkbox("👨‍💼 Switch to Centre Coordinator", 
+                      help="Switch to Centre Coordinator allocation"):
+            st.session_state.menu = "io"
+            st.rerun()
     
     # Master Data Loading
     st.markdown("### 📁 EY Master Data")
@@ -1613,70 +1693,87 @@ def show_ey_personnel():
             # Allocation button
             if st.button(f"✅ Allocate {selected_ey} to Selected Dates", 
                         use_container_width=True):
-                # Get reference
-                ref_data = get_or_create_reference("EY Personnel")
-                
-                if ref_data:
-                    allocation_count = 0
-                    conflicts = []
-                    
-                    for date_info in selected_date_info:
-                        # Check for conflicts
-                        conflict, message = check_allocation_conflict(
-                            selected_ey, date_info['date'], date_info['shift'],
-                            date_info['venue'], "", "EY"
-                        )
-                        
-                        if conflict:
-                            conflicts.append(message)
-                            continue
-                        
-                        # Create allocation
-                        allocation = {
-                            'Sl. No.': len(st.session_state.ey_allocation) + allocation_count + 1,
-                            'Venue': date_info['venue'],
-                            'Date': date_info['date'],
-                            'Shift': date_info['shift'],
-                            'EY Personnel': selected_ey,
-                            'Mobile': ey_row.get('MOBILE', ''),
-                            'Email': ey_row.get('EMAIL', ''),
-                            'ID Number': ey_row.get('ID_NUMBER', ''),
-                            'Designation': ey_row.get('DESIGNATION', ''),
-                            'Department': ey_row.get('DEPARTMENT', ''),
-                            'Mock Test': False,
-                            'Exam': st.session_state.current_exam_key,
-                            'Rate (₹)': st.session_state.remuneration_rates['ey_personnel'],
-                            'Order No.': ref_data['order_no'],
-                            'Page No.': ref_data['page_no'],
-                            'Reference Remarks': ref_data.get('remarks', ''),
-                            'Timestamp': datetime.now().isoformat()
-                        }
-                        
-                        st.session_state.ey_allocation.append(allocation)
-                        allocation_count += 1
-                    
-                    # Update exam data
-                    exam_key = st.session_state.current_exam_key
-                    if exam_key not in st.session_state.exam_data:
-                        st.session_state.exam_data[exam_key] = {}
-                    
-                    st.session_state.exam_data[exam_key]['ey_allocations'] = st.session_state.ey_allocation
-                    
-                    # Save data
-                    save_all_data()
-                    
-                    if allocation_count > 0:
-                        success_msg = f"✅ Allocated {selected_ey} to {allocation_count} date-shift combinations"
-                        if conflicts:
-                            success_msg += f"\n\n⚠️ {len(conflicts)} conflict(s) prevented allocation"
-                        st.success(success_msg)
-                        st.rerun()
-                    else:
-                        st.error("❌ No allocations made due to conflicts")
-                else:
-                    st.warning("Allocation cancelled - no reference provided")
+                # Set allocation state
+                st.session_state.current_allocation_person = selected_ey
+                st.session_state.current_allocation_ey_row = ey_row.to_dict()
+                st.session_state.current_allocation_type = "EY"
+                st.rerun()
     else:
         st.warning("No EY personnel found matching search criteria")
+    
+    # Handle EY allocation after reference selection
+    if hasattr(st.session_state, 'current_allocation_person') and st.session_state.current_allocation_type == "EY":
+        # Show reference selection
+        ref_data = get_or_create_reference("EY Personnel")
+        
+        if ref_data is not None:
+            # Perform allocation
+            allocation_count = 0
+            conflicts = []
+            ey_row = st.session_state.current_allocation_ey_row
+            
+            for date_info in selected_date_info:
+                # Check for conflicts
+                conflict, message = check_allocation_conflict(
+                    st.session_state.current_allocation_person, 
+                    date_info['date'], 
+                    date_info['shift'],
+                    date_info['venue'], 
+                    "", 
+                    "EY"
+                )
+                
+                if conflict:
+                    conflicts.append(message)
+                    continue
+                
+                # Create allocation
+                allocation = {
+                    'Sl. No.': len(st.session_state.ey_allocation) + allocation_count + 1,
+                    'Venue': date_info['venue'],
+                    'Date': date_info['date'],
+                    'Shift': date_info['shift'],
+                    'EY Personnel': st.session_state.current_allocation_person,
+                    'Mobile': ey_row.get('MOBILE', ''),
+                    'Email': ey_row.get('EMAIL', ''),
+                    'ID Number': ey_row.get('ID_NUMBER', ''),
+                    'Designation': ey_row.get('DESIGNATION', ''),
+                    'Department': ey_row.get('DEPARTMENT', ''),
+                    'Mock Test': False,
+                    'Exam': st.session_state.current_exam_key,
+                    'Rate (₹)': st.session_state.remuneration_rates['ey_personnel'],
+                    'Order No.': ref_data['order_no'],
+                    'Page No.': ref_data['page_no'],
+                    'Reference Remarks': ref_data.get('remarks', ''),
+                    'Timestamp': datetime.now().isoformat()
+                }
+                
+                st.session_state.ey_allocation.append(allocation)
+                allocation_count += 1
+            
+            # Update exam data
+            exam_key = st.session_state.current_exam_key
+            if exam_key not in st.session_state.exam_data:
+                st.session_state.exam_data[exam_key] = {}
+            
+            st.session_state.exam_data[exam_key]['ey_allocations'] = st.session_state.ey_allocation
+            
+            # Save data
+            save_all_data()
+            
+            # Clear allocation state
+            del st.session_state.current_allocation_person
+            del st.session_state.current_allocation_ey_row
+            del st.session_state.current_allocation_type
+            
+            if allocation_count > 0:
+                success_msg = f"✅ Allocated {st.session_state.current_allocation_person} to {allocation_count} date-shift combinations"
+                if conflicts:
+                    success_msg += f"\n\n⚠️ {len(conflicts)} conflict(s) prevented allocation"
+                st.success(success_msg)
+                st.rerun()
+            else:
+                st.error("❌ No allocations made due to conflicts")
     
     # Current EY Allocations
     if st.session_state.ey_allocation:
@@ -1696,7 +1793,8 @@ def show_ey_personnel():
             )
             
             # Summary statistics
-            total_cost = current_ey['Date'].nunique() * st.session_state.remuneration_rates['ey_personnel']
+            unique_dates = current_ey['Date'].nunique()
+            total_cost = unique_dates * st.session_state.remuneration_rates['ey_personnel']
             unique_personnel = current_ey['EY Personnel'].nunique()
             
             col_stat1, col_stat2 = st.columns(2)
