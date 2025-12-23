@@ -2125,46 +2125,47 @@ def main():
         with tab_help:
             st.subheader("❓ Help & Documentation")
             
-            st.markdown("""
+            # FIXED: Using raw string to avoid Unicode escape error
+            st.markdown(r"""
             ### 📖 User Guide
-            
+
             **1. 📋 Exam Management**
             - Create a new exam by entering Exam Name and Year
             - Select existing exams from the dropdown
             - Set allocation references for each role (Order No., Page No.)
-            
+
             **2. 👥 Centre Coordinator Allocation**
             - Load Centre Coordinator master file (Excel format)
             - Load Venue list file (Excel format)
             - Select venue, dates, and shifts
             - Search and select Centre Coordinators
             - Allocate with proper references
-            
+
             **3. 👁️ EY Personnel Allocation**
             - Load EY Personnel master file (Excel format)
             - Enable EY allocation mode
             - Select multiple venues and dates
             - Allocate EY personnel with references
-            
+
             **4. 📊 Reports & Export**
             - Export allocation reports in Excel format
             - Generate remuneration reports
             - View summary statistics
-            
+
             **5. ⚙️ Settings & Tools**
             - Backup and restore data
             - View allocation references
             - View deleted records
             - System settings
-            
+
             ### 📝 Data Format Requirements
-            
+
             **Centre Coordinator Master File (Excel)**
             Required columns:
             - `NAME`: Name of Centre Coordinator
             - `AREA`: Area/Region
             - `CENTRE_CODE`: Centre code (4 digits)
-            
+
             **Venue List File (Excel)**
             Required columns:
             - `VENUE`: Venue name
@@ -2172,33 +2173,33 @@ def main():
             - `SHIFT`: Shift (Morning/Afternoon/Evening)
             - `CENTRE_CODE`: Centre code
             - `ADDRESS`: Venue address
-            
+
             **EY Personnel Master File (Excel)**
             Required columns:
             - `NAME`: Name of EY Personnel
-            
+
             Optional columns:
             - `MOBILE`: Mobile number
             - `EMAIL`: Email address
             - `ID_NUMBER`: ID number
             - `DESIGNATION`: Designation
             - `DEPARTMENT`: Department
-            
+
             ### ⚠️ Important Notes
-            
+
             - **Data Storage**: All data is stored in: `C:\Users\user\Desktop\CC_FSO_EY ALLOCATION`
             - Always set allocation references before allocating
             - Use the search functionality to find personnel quickly
             - Regularly backup your data
             - Check for allocation conflicts before finalizing
             - All data is stored locally in JSON files
-            
+
             ### 🆘 Support
-            
+
             For issues or questions, please contact the system administrator.
-            
+
             ---
-            
+
             **Designed by Bijay Paswan**  
             **Version 1.0**  
             **Staff Selection Commission (ER), Kolkata**  
