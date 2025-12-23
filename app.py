@@ -11,28 +11,27 @@ import base64
 import tempfile
 from collections import defaultdict
 import time
-import shutil
 
-# ============================================================
-# FIXED FOLDER PATH - CHANGE THIS TO YOUR DATA FOLDER
-# ============================================================
-DATA_DIR = Path(r"C:\Users\user\Desktop\CC_FSO_EY ALLOCATION")
+# Try to import tkinter for folder dialog
+try:
+    import tkinter as tk
+    from tkinter import filedialog
+    Tkinter_AVAILABLE = True
+except ImportError:
+    Tkinter_AVAILABLE = False
 
-# Create directory if it doesn't exist
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+# Global variables that will be set based on chosen folder
+CONFIG_FILE = None
+DATA_FILE = None
+REFERENCE_FILE = None
+DELETED_RECORDS_FILE = None
+BACKUP_DIR = None
+DATA_DIR = None
 
-# File paths in the chosen folder
-CONFIG_FILE = DATA_DIR / "config.json"
-DATA_FILE = DATA_DIR / "allocations_data.json"
-REFERENCE_FILE = DATA_DIR / "allocation_references.json"
-DELETED_RECORDS_FILE = DATA_DIR / "deleted_records.json"
-BACKUP_DIR = DATA_DIR / "backups"
-
-# Configure logging to the chosen folder
+# Configure logging (will be re-configured after folder is chosen)
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    filename=DATA_DIR / 'app.log'
+    format='%(asctime)s - %(levelname)s - %(message)s'
 )
 
 # Initialize session state
@@ -72,8 +71,10 @@ def init_session_state():
         'deletion_count': 0,
         'bulk_delete_mode': False,
         'bulk_delete_selected': [],
-        'data_folder_initialized': True,  # Set to True since we have fixed path
-        'show_folder_info': True
+        'data_folder_initialized': False,
+        'data_folder_path': None,
+        'show_folder_selection': True,
+        'folder_selected_via_ui': False
     }
     
     for key, value in default_states.items():
@@ -92,68 +93,233 @@ Michael Wilson,North 24 Parganas,2002,9876543214,michael@example.com"""
         st.session_state.io_df = pd.read_csv(io.StringIO(default_data))
         st.session_state.io_df['CENTRE_CODE'] = st.session_state.io_df['CENTRE_CODE'].astype(str).str.zfill(4)
 
-# Migrate old data from app directory to the fixed folder
-def migrate_old_data():
-    """Migrate data from old location to new fixed folder"""
-    old_base = Path(__file__).parent  # Old app folder
+def choose_folder_dialog():
+    """Open a dialog to choose folder (uses tkinter if available, otherwise manual input)"""
+    folder_path = None
     
-    files_to_migrate = [
-        ("config.json", CONFIG_FILE),
-        ("allocations_data.json", DATA_FILE),
-        ("allocation_references.json", REFERENCE_FILE),
-        ("deleted_records.json", DELETED_RECORDS_FILE),
-        ("allocation_references.json", REFERENCE_FILE),  # Your file name
-        ("allocations_data.json", DATA_FILE),  # Your file name
-        ("deleted_records.json", DELETED_RECORDS_FILE)  # Your file name
-    ]
+    if Tkinter_AVAILABLE:
+        try:
+            root = tk.Tk()
+            root.withdraw()  # Hide the main window
+            root.attributes('-topmost', True)  # Bring dialog to front
+            
+            folder_path = filedialog.askdirectory(
+                title="Select Data Storage Folder",
+                initialdir=os.path.expanduser("~")
+            )
+            root.destroy()
+        except:
+            folder_path = None
     
-    migrated_files = []
+    return folder_path
+
+def set_data_folder(folder_path):
+    """Set the data folder and update all file paths"""
+    global CONFIG_FILE, DATA_FILE, REFERENCE_FILE, DELETED_RECORDS_FILE, BACKUP_DIR, DATA_DIR
     
-    for old_name, new_path in files_to_migrate:
-        # Try different possible old file names
-        old_path = old_base / old_name
+    if not folder_path:
+        return False
+    
+    try:
+        # Convert to Path object
+        folder_path = Path(folder_path)
         
-        if old_path.exists() and not new_path.exists():
-            try:
-                # Copy file to new location
-                shutil.copy2(old_path, new_path)
-                migrated_files.append(old_name)
-                logging.info(f"Migrated {old_name} to {new_path}")
-            except Exception as e:
-                logging.error(f"Failed to migrate {old_name}: {str(e)}")
-    
-    # Also check for files with similar names
-    for json_file in old_base.glob("*.json"):
-        file_name = json_file.name.lower()
+        # Create directory if it doesn't exist
+        folder_path.mkdir(parents=True, exist_ok=True)
         
-        # Map different file names
-        if "allocation" in file_name and "data" in file_name and not DATA_FILE.exists():
-            try:
-                shutil.copy2(json_file, DATA_FILE)
-                migrated_files.append(json_file.name)
-            except Exception as e:
-                logging.error(f"Failed to migrate {json_file.name}: {str(e)}")
+        # Test if we can write to this folder
+        test_file = folder_path / "test_write.txt"
+        test_file.write_text("test")
+        test_file.unlink()
         
-        elif "reference" in file_name and not REFERENCE_FILE.exists():
-            try:
-                shutil.copy2(json_file, REFERENCE_FILE)
-                migrated_files.append(json_file.name)
-            except Exception as e:
-                logging.error(f"Failed to migrate {json_file.name}: {str(e)}")
+        # Set global paths
+        DATA_DIR = folder_path
+        CONFIG_FILE = DATA_DIR / "config.json"
+        DATA_FILE = DATA_DIR / "allocations_data.json"
+        REFERENCE_FILE = DATA_DIR / "allocation_references.json"
+        DELETED_RECORDS_FILE = DATA_DIR / "deleted_records.json"
+        BACKUP_DIR = DATA_DIR / "backups"
+        
+        # Create backup directory
+        BACKUP_DIR.mkdir(exist_ok=True)
+        
+        # Reconfigure logging to new folder
+        for handler in logging.root.handlers[:]:
+            logging.root.removeHandler(handler)
+        
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(levelname)s - %(message)s',
+            filename=DATA_DIR / 'app.log'
+        )
+        
+        # Save folder path to config
+        save_folder_path_to_config(str(folder_path))
+        
+        return True
+        
+    except Exception as e:
+        st.error(f"❌ Cannot use folder {folder_path}: {str(e)}")
+        logging.error(f"Failed to set data folder: {str(e)}")
+        return False
+
+def save_folder_path_to_config(folder_path):
+    """Save the chosen folder path to a config file in app directory"""
+    try:
+        app_config_file = Path(__file__).parent / "app_config.json"
+        config_data = {'data_folder': folder_path}
+        with open(app_config_file, 'w') as f:
+            json.dump(config_data, f, indent=4)
+    except Exception as e:
+        logging.error(f"Error saving folder path to config: {str(e)}")
+
+def load_folder_path_from_config():
+    """Load folder path from config file"""
+    try:
+        app_config_file = Path(__file__).parent / "app_config.json"
+        if app_config_file.exists():
+            with open(app_config_file, 'r') as f:
+                config_data = json.load(f)
+                return config_data.get('data_folder')
+    except Exception as e:
+        logging.error(f"Error loading folder path from config: {str(e)}")
+    return None
+
+def show_folder_selection_ui():
+    """Show UI for selecting data folder"""
+    st.title("📁 Select Data Storage Folder")
+    st.markdown("---")
     
-    return migrated_files
+    st.info("""
+    **Please select a folder where your allocation data will be saved.**  
+    This folder will contain all your exam data, allocations, and backups.
+    """)
+    
+    # Option 1: Browse with dialog (if tkinter available)
+    if Tkinter_AVAILABLE:
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            folder_path = st.text_input(
+                "Folder Path:",
+                value=st.session_state.get('temp_folder_path', ""),
+                placeholder="e.g., C:\\Users\\YourName\\Documents\\SSC_Data",
+                help="Click 'Browse' to select folder or type path manually"
+            )
+        
+        with col2:
+            if st.button("📂 Browse Folder", use_container_width=True):
+                selected_folder = choose_folder_dialog()
+                if selected_folder:
+                    st.session_state.temp_folder_path = selected_folder
+                    folder_path = selected_folder
+                    st.rerun()
+    else:
+        # Option 2: Manual input only
+        st.warning("⚠️ Folder browser not available. Please enter the full path manually.")
+        folder_path = st.text_input(
+            "Folder Path:",
+            value=st.session_state.get('temp_folder_path', ""),
+            placeholder="e.g., C:\\Users\\YourName\\Documents\\SSC_Data",
+            help="Enter full path to folder"
+        )
+    
+    # Default suggestions
+    st.markdown("**Suggested locations:**")
+    col_sug1, col_sug2, col_sug3 = st.columns(3)
+    
+    with col_sug1:
+        if st.button("📁 Documents Folder", use_container_width=True):
+            docs_path = Path.home() / "Documents" / "SSC_Allocation_Data"
+            st.session_state.temp_folder_path = str(docs_path)
+            st.rerun()
+    
+    with col_sug2:
+        if st.button("🏢 Desktop Folder", use_container_width=True):
+            desktop_path = Path.home() / "Desktop" / "SSC_Allocation_Data"
+            st.session_state.temp_folder_path = str(desktop_path)
+            st.rerun()
+    
+    with col_sug3:
+        if st.button("💾 D Drive Folder", use_container_width=True):
+            d_drive_path = Path("D:/SSC_Allocation_Data")
+            st.session_state.temp_folder_path = str(d_drive_path)
+            st.rerun()
+    
+    # Set folder button
+    if folder_path:
+        folder_path = folder_path.strip()
+        if folder_path:
+            st.info(f"Selected folder: `{folder_path}`")
+            
+            col_set1, col_set2 = st.columns(2)
+            with col_set1:
+                if st.button("✅ Use This Folder", type="primary", use_container_width=True):
+                    if set_data_folder(folder_path):
+                        st.session_state.data_folder_path = folder_path
+                        st.session_state.data_folder_initialized = True
+                        st.session_state.show_folder_selection = False
+                        st.success(f"✅ Data folder set to: {folder_path}")
+                        time.sleep(1)
+                        st.rerun()
+            
+            with col_set2:
+                if st.button("❌ Cancel", use_container_width=True):
+                    st.session_state.show_folder_selection = False
+                    st.rerun()
+    
+    # Migration option
+    st.markdown("---")
+    with st.expander("🔄 Migrate Existing Data"):
+        st.write("If you have existing data in another location, you can migrate it.")
+        
+        old_folder = st.text_input(
+            "Old Data Folder Path:",
+            placeholder="Path to folder containing existing JSON files"
+        )
+        
+        if old_folder and st.button("Migrate Data", use_container_width=True):
+            migrate_existing_data(old_folder, folder_path if folder_path else "")
+
+def migrate_existing_data(old_folder_path, new_folder_path):
+    """Migrate data from old folder to new folder"""
+    try:
+        old_folder = Path(old_folder_path)
+        new_folder = Path(new_folder_path)
+        
+        if not old_folder.exists():
+            st.error("❌ Old folder does not exist")
+            return
+        
+        files_to_copy = [
+            "config.json",
+            "allocations_data.json", 
+            "allocation_references.json",
+            "deleted_records.json"
+        ]
+        
+        copied_files = []
+        for filename in files_to_copy:
+            old_file = old_folder / filename
+            if old_file.exists():
+                new_file = new_folder / filename
+                import shutil
+                shutil.copy2(old_file, new_file)
+                copied_files.append(filename)
+        
+        if copied_files:
+            st.success(f"✅ Migrated {len(copied_files)} files to new folder")
+        else:
+            st.warning("⚠️ No data files found in old folder")
+            
+    except Exception as e:
+        st.error(f"❌ Migration failed: {str(e)}")
 
 # Load data from files
 def load_data():
+    if not CONFIG_FILE or not DATA_DIR:
+        return
+    
     try:
-        # Migrate old data if needed (only once)
-        if 'data_migrated' not in st.session_state:
-            migrated = migrate_old_data()
-            if migrated:
-                st.success(f"✅ Migrated {len(migrated)} files to: {DATA_DIR}")
-                time.sleep(2)
-            st.session_state.data_migrated = True
-        
         # Load config
         if CONFIG_FILE.exists():
             with open(CONFIG_FILE, 'r') as f:
@@ -183,10 +349,13 @@ def load_data():
                 
     except Exception as e:
         st.error(f"Error loading data: {str(e)}")
-        logging.error(f"Error loading data: {str(e)}")
 
 # Save data to files
 def save_data():
+    if not CONFIG_FILE or not DATA_DIR:
+        st.error("❌ Data folder not set. Please select a folder first.")
+        return False
+    
     try:
         # Save config
         config = {
@@ -225,6 +394,9 @@ def save_data():
 # Helper functions
 def create_backup(exam_key=None):
     """Create a backup of exam data"""
+    if not BACKUP_DIR:
+        return None
+    
     try:
         BACKUP_DIR.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -929,7 +1101,7 @@ def show_data_folder_info():
             
             # Count files
             json_files = list(DATA_DIR.glob("*.json"))
-            backup_files = list(BACKUP_DIR.glob("*.json")) if BACKUP_DIR.exists() else []
+            backup_files = list(BACKUP_DIR.glob("*.json")) if BACKUP_DIR and BACKUP_DIR.exists() else []
             
             # Show path (truncated if too long)
             folder_path = str(DATA_DIR)
@@ -953,9 +1125,11 @@ def show_data_folder_info():
                 backup_time = datetime.fromtimestamp(latest_backup.stat().st_mtime)
                 st.caption(f"Last backup: {backup_time.strftime('%d-%m-%Y %H:%M')}")
             
-            # Show file sizes
-            total_size = sum(f.stat().st_size for f in DATA_DIR.rglob('*') if f.is_file())
-            st.caption(f"Total size: {total_size / 1024:.1f} KB")
+            # Change folder button
+            if st.button("🔄 Change Folder", use_container_width=True):
+                st.session_state.show_folder_selection = True
+                st.session_state.data_folder_initialized = False
+                st.rerun()
 
 # Main app
 def main():
@@ -969,7 +1143,23 @@ def main():
     # Initialize session state
     init_session_state()
     
-    # Load data
+    # Check if folder needs to be selected
+    if st.session_state.show_folder_selection or not st.session_state.data_folder_initialized:
+        # Try to load saved folder path
+        if not st.session_state.data_folder_path:
+            saved_folder = load_folder_path_from_config()
+            if saved_folder and Path(saved_folder).exists():
+                if set_data_folder(saved_folder):
+                    st.session_state.data_folder_path = saved_folder
+                    st.session_state.data_folder_initialized = True
+                    st.session_state.show_folder_selection = False
+        
+        # Show folder selection UI if still needed
+        if st.session_state.show_folder_selection:
+            show_folder_selection_ui()
+            return
+    
+    # Now we have a data folder, load the data
     load_data()
     
     # Show reference dialog if open
@@ -1031,7 +1221,7 @@ def main():
         st.markdown("---")
         
         # System info
-        st.caption(f"**Version:** 1.0")
+        st.caption(f"**Version:** 2.0")
         st.caption(f"**Last Updated:** {datetime.now().strftime('%d-%m-%Y %H:%M')}")
         st.caption("**Designed by Bijay Paswan**")
     
@@ -1994,21 +2184,28 @@ def main():
             st.subheader("📁 Data Storage Settings")
             
             # Current folder info
-            st.info(f"**Current Data Folder:**\n`{DATA_DIR}`")
-            
-            # Show folder statistics
-            col_stats1, col_stats2, col_stats3 = st.columns(3)
-            with col_stats1:
-                json_files = list(DATA_DIR.glob("*.json"))
-                st.metric("Data Files", len(json_files))
-            
-            with col_stats2:
-                backup_files = list(BACKUP_DIR.glob("*.json")) if BACKUP_DIR.exists() else []
-                st.metric("Backups", len(backup_files))
-            
-            with col_stats3:
-                total_size = sum(f.stat().st_size for f in DATA_DIR.rglob('*') if f.is_file())
-                st.metric("Total Size", f"{total_size / 1024:.1f} KB")
+            if DATA_DIR and DATA_DIR.exists():
+                st.info(f"**Current Data Folder:**\n`{DATA_DIR}`")
+                
+                # Show folder statistics
+                col_stats1, col_stats2, col_stats3 = st.columns(3)
+                with col_stats1:
+                    json_files = list(DATA_DIR.glob("*.json"))
+                    st.metric("Data Files", len(json_files))
+                
+                with col_stats2:
+                    backup_files = list(BACKUP_DIR.glob("*.json")) if BACKUP_DIR and BACKUP_DIR.exists() else []
+                    st.metric("Backups", len(backup_files))
+                
+                with col_stats3:
+                    total_size = sum(f.stat().st_size for f in DATA_DIR.rglob('*') if f.is_file())
+                    st.metric("Total Size", f"{total_size / 1024:.1f} KB")
+                
+                # Change folder button
+                if st.button("🔄 Change Data Folder", use_container_width=True, type="primary"):
+                    st.session_state.show_folder_selection = True
+                    st.session_state.data_folder_initialized = False
+                    st.rerun()
             
             # Data Management
             st.divider()
@@ -2057,10 +2254,10 @@ def main():
             
             with info_col1:
                 st.write("**📁 Data Files:**")
-                st.write(f"- Config: {'✅' if CONFIG_FILE.exists() else '❌'}")
-                st.write(f"- Exam Data: {'✅' if DATA_FILE.exists() else '❌'}")
-                st.write(f"- References: {'✅' if REFERENCE_FILE.exists() else '❌'}")
-                st.write(f"- Deleted Records: {'✅' if DELETED_RECORDS_FILE.exists() else '❌'}")
+                st.write(f"- Config: {'✅' if CONFIG_FILE and CONFIG_FILE.exists() else '❌'}")
+                st.write(f"- Exam Data: {'✅' if DATA_FILE and DATA_FILE.exists() else '❌'}")
+                st.write(f"- References: {'✅' if REFERENCE_FILE and REFERENCE_FILE.exists() else '❌'}")
+                st.write(f"- Deleted Records: {'✅' if DELETED_RECORDS_FILE and DELETED_RECORDS_FILE.exists() else '❌'}")
             
             with info_col2:
                 st.write("**📊 Current Data:**")
@@ -2083,20 +2280,22 @@ def main():
                         st.error("❌ Failed to create backup")
                 
                 # List existing backups
-                BACKUP_DIR.mkdir(exist_ok=True)
-                backup_files = list(BACKUP_DIR.glob("*.json"))
-                
-                if backup_files:
-                    st.write("**📂 Available Backups:**")
-                    for i, backup_file in enumerate(sorted(backup_files, reverse=True)[:5]):
-                        file_time = datetime.fromtimestamp(backup_file.stat().st_mtime).strftime('%d-%m-%Y %H:%M')
-                        st.write(f"{i+1}. {backup_file.name}")
-                        st.caption(f"   Created: {file_time} | Size: {backup_file.stat().st_size} bytes")
+                if BACKUP_DIR and BACKUP_DIR.exists():
+                    backup_files = list(BACKUP_DIR.glob("*.json"))
+                    
+                    if backup_files:
+                        st.write("**📂 Available Backups:**")
+                        for i, backup_file in enumerate(sorted(backup_files, reverse=True)[:5]):
+                            file_time = datetime.fromtimestamp(backup_file.stat().st_mtime).strftime('%d-%m-%Y %H:%M')
+                            st.write(f"{i+1}. {backup_file.name}")
+                            st.caption(f"   Created: {file_time} | Size: {backup_file.stat().st_size} bytes")
+                    else:
+                        st.info("ℹ️ No backups available yet")
                 else:
-                    st.info("ℹ️ No backups available yet")
+                    st.warning("⚠️ Backup directory not available")
             
             with col_back2:
-                if BACKUP_DIR.exists():
+                if BACKUP_DIR and BACKUP_DIR.exists():
                     backup_files = list(BACKUP_DIR.glob("*.json"))
                     if backup_files:
                         backup_options = [f.name for f in sorted(backup_files, reverse=True)]
@@ -2152,6 +2351,7 @@ def main():
             - View summary statistics
             
             **5. ⚙️ Settings & Tools**
+            - Select data storage folder
             - Backup and restore data
             - View allocation references
             - View deleted records
@@ -2186,7 +2386,7 @@ def main():
             
             ### ⚠️ Important Notes
             
-            - **Data Storage**: All data is stored in: `C:\Users\user\Desktop\CC_FSO_EY ALLOCATION`
+            - **Data Storage**: First time you run the app, you'll be asked to select a folder where data will be saved
             - Always set allocation references before allocating
             - Use the search functionality to find personnel quickly
             - Regularly backup your data
@@ -2200,7 +2400,7 @@ def main():
             ---
             
             **Designed by Bijay Paswan**  
-            **Version 1.0**  
+            **Version 2.0 (with Folder Selection)**  
             **Staff Selection Commission (ER), Kolkata**  
             © All rights reserved
             """)
