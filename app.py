@@ -9,6 +9,8 @@ import base64
 import time
 import requests
 import hashlib
+import numpy as np
+from io import BytesIO
 
 # ============================================================
 # GITHUB REPOSITORY CONFIGURATION
@@ -153,9 +155,9 @@ def init_session_state():
         'ey_allocation_mode': False,
         'selected_ey_personnel': "",
         'selected_ey_venues': [],
-        'date_selections': {},
-        'shift_selections': {},
-        'date_expanded': {},
+        'date_vars': [],
+        'date_buttons': {},
+        'select_all_var': False,
         'reference_dialog_open': False,
         'reference_type': "",
         'deletion_dialog_open': False,
@@ -598,17 +600,31 @@ def export_allocations_report():
             # IO Allocations
             if st.session_state.allocation:
                 alloc_df = pd.DataFrame(st.session_state.allocation)
+                # Ensure all values are strings
+                alloc_df = alloc_df.astype(str)
                 alloc_df.to_excel(writer, index=False, sheet_name='IO Allocations')
             
             # EY Allocations
             if st.session_state.ey_allocation:
                 ey_alloc_df = pd.DataFrame(st.session_state.ey_allocation)
+                ey_alloc_df = ey_alloc_df.astype(str)
                 ey_alloc_df.to_excel(writer, index=False, sheet_name='EY Allocations')
             
             # Deleted Records
             if st.session_state.deleted_records:
                 deleted_df = pd.DataFrame(st.session_state.deleted_records)
+                deleted_df = deleted_df.astype(str)
                 deleted_df.to_excel(writer, index=False, sheet_name='Deleted Records')
+            
+            # Always add rates sheet
+            rates_data = [
+                {'Category': 'Multiple Shifts', 'Amount (₹)': str(st.session_state.remuneration_rates['multiple_shifts']), 'Reference': 'Per allocation'},
+                {'Category': 'Single Shift', 'Amount (₹)': str(st.session_state.remuneration_rates['single_shift']), 'Reference': 'Per allocation'},
+                {'Category': 'Mock Test', 'Amount (₹)': str(st.session_state.remuneration_rates['mock_test']), 'Reference': 'Per allocation'},
+                {'Category': 'EY Personnel', 'Amount (₹)': str(st.session_state.remuneration_rates['ey_personnel']), 'Reference': 'Per day'}
+            ]
+            rates_df = pd.DataFrame(rates_data)
+            rates_df.to_excel(writer, index=False, sheet_name='Rates')
             
             writer.save()
         
@@ -625,6 +641,79 @@ def export_allocations_report():
         
     except Exception as e:
         st.error(f"❌ Export failed: {str(e)}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
+
+def calculate_remuneration():
+    """Calculate remuneration for IO allocations"""
+    if not st.session_state.allocation:
+        return pd.DataFrame()
+    
+    remuneration_data = []
+    alloc_df = pd.DataFrame(st.session_state.allocation)
+    
+    for (io_name, date), group in alloc_df.groupby(['IO Name', 'Date']):
+        shifts = group['Shift'].nunique()
+        is_mock = any(group['Mock Test'].astype(str) == 'True')
+        
+        # Get reference information
+        order_no = group.iloc[0].get('Order No.', '')
+        page_no = group.iloc[0].get('Page No.', '')
+        
+        if is_mock:
+            amount = st.session_state.remuneration_rates['mock_test']
+            shift_type = "Mock Test"
+        else:
+            if shifts > 1:
+                amount = st.session_state.remuneration_rates['multiple_shifts']
+                shift_type = "Multiple Shifts"
+            else:
+                amount = st.session_state.remuneration_rates['single_shift']
+                shift_type = "Single Shift"
+        
+        remuneration_data.append({
+            'IO Name': str(io_name),
+            'Date': str(date),
+            'Total Shifts': int(shifts),
+            'Shift Type': str(shift_type),
+            'Mock Test': "Yes" if is_mock else "No",
+            'Amount (₹)': int(amount),
+            'Order No.': str(order_no),
+            'Page No.': str(page_no)
+        })
+    
+    return pd.DataFrame(remuneration_data)
+
+def calculate_ey_remuneration():
+    """Calculate EY personnel remuneration"""
+    if not st.session_state.ey_allocation:
+        return pd.DataFrame()
+    
+    ey_remuneration_data = []
+    ey_df = pd.DataFrame(st.session_state.ey_allocation)
+    
+    for (ey_person, date), group in ey_df.groupby(['EY Personnel', 'Date']):
+        shifts = group['Shift'].nunique()
+        is_mock = any(group['Mock Test'].astype(str) == 'True')
+        
+        amount = st.session_state.remuneration_rates['ey_personnel']
+        
+        # Get reference information
+        order_no = group.iloc[0].get('Order No.', '')
+        page_no = group.iloc[0].get('Page No.', '')
+        
+        ey_remuneration_data.append({
+            'EY Personnel': str(ey_person),
+            'Date': str(date),
+            'Total Shifts': int(shifts),
+            'Mock Test': "Yes" if is_mock else "No",
+            'Amount (₹)': int(amount),
+            'Rate Type': 'Per Day',
+            'Order No.': str(order_no),
+            'Page No.': str(page_no)
+        })
+    
+    return pd.DataFrame(ey_remuneration_data)
 
 def export_remuneration_report():
     """Export remuneration report"""
@@ -633,59 +722,22 @@ def export_remuneration_report():
         return
     
     try:
-        # Calculate IO remuneration
-        io_remuneration = []
-        if st.session_state.allocation:
-            alloc_df = pd.DataFrame(st.session_state.allocation)
-            for (io_name, date), group in alloc_df.groupby(['IO Name', 'Date']):
-                shifts = group['Shift'].nunique()
-                is_mock = any(group['Mock Test'])
-                
-                if is_mock:
-                    amount = st.session_state.remuneration_rates['mock_test']
-                    shift_type = "Mock Test"
-                else:
-                    if shifts > 1:
-                        amount = st.session_state.remuneration_rates['multiple_shifts']
-                        shift_type = "Multiple Shifts"
-                    else:
-                        amount = st.session_state.remuneration_rates['single_shift']
-                        shift_type = "Single Shift"
-                
-                io_remuneration.append({
-                    'IO Name': io_name,
-                    'Date': date,
-                    'Total Shifts': shifts,
-                    'Shift Type': shift_type,
-                    'Amount (₹)': amount
-                })
-        
-        # Calculate EY remuneration
-        ey_remuneration = []
-        if st.session_state.ey_allocation:
-            ey_df = pd.DataFrame(st.session_state.ey_allocation)
-            for (ey_person, date), group in ey_df.groupby(['EY Personnel', 'Date']):
-                amount = st.session_state.remuneration_rates['ey_personnel']
-                ey_remuneration.append({
-                    'EY Personnel': ey_person,
-                    'Date': date,
-                    'Rate Type': 'Per Day',
-                    'Amount (₹)': amount
-                })
+        # Calculate remuneration
+        rem_df = calculate_remuneration()
+        ey_rem_df = calculate_ey_remuneration()
         
         # Create Excel writer
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
             # IO Remuneration
-            if io_remuneration:
-                io_rem_df = pd.DataFrame(io_remuneration)
-                io_rem_df.to_excel(writer, index=False, sheet_name='IO Remuneration')
+            if not rem_df.empty:
+                rem_df.to_excel(writer, index=False, sheet_name='IO Remuneration')
                 
                 # IO Summary
                 io_summary = []
-                for io_name in set(item['IO Name'] for item in io_remuneration):
-                    io_data = [item for item in io_remuneration if item['IO Name'] == io_name]
-                    total_amount = sum(item['Amount (₹)'] for item in io_data)
+                for io_name in rem_df['IO Name'].unique():
+                    io_data = rem_df[rem_df['IO Name'] == io_name]
+                    total_amount = io_data['Amount (₹)'].sum()
                     total_days = len(io_data)
                     
                     io_summary.append({
@@ -699,15 +751,14 @@ def export_remuneration_report():
                     io_summary_df.to_excel(writer, index=False, sheet_name='IO Summary')
             
             # EY Remuneration
-            if ey_remuneration:
-                ey_rem_df = pd.DataFrame(ey_remuneration)
+            if not ey_rem_df.empty:
                 ey_rem_df.to_excel(writer, index=False, sheet_name='EY Remuneration')
                 
                 # EY Summary
                 ey_summary = []
-                for ey_person in set(item['EY Personnel'] for item in ey_remuneration):
-                    ey_data = [item for item in ey_remuneration if item['EY Personnel'] == ey_person]
-                    total_amount = sum(item['Amount (₹)'] for item in ey_data)
+                for ey_person in ey_rem_df['EY Personnel'].unique():
+                    ey_data = ey_rem_df[ey_rem_df['EY Personnel'] == ey_person]
+                    total_amount = ey_data['Amount (₹)'].sum()
                     total_days = len(ey_data)
                     
                     ey_summary.append({
@@ -745,6 +796,8 @@ def export_remuneration_report():
         
     except Exception as e:
         st.error(f"❌ Export failed: {str(e)}")
+        import traceback
+        st.error(f"Traceback: {traceback.format_exc()}")
 
 def show_io_summary():
     """Show IO summary"""
@@ -828,6 +881,138 @@ def show_date_summary():
     date_summary = date_summary.sort_values('Date')
     
     st.dataframe(date_summary, use_container_width=True, hide_index=True)
+
+# ============================================================
+# DATE SELECTION FUNCTIONS (TKINTER-STYLE)
+# ============================================================
+
+def create_date_grid(dates_data):
+    """Create a grid layout for dates like Tkinter app"""
+    # Clear existing date variables
+    st.session_state.date_vars = []
+    st.session_state.date_buttons = {}
+    
+    if not dates_data:
+        return
+    
+    # Sort dates chronologically
+    try:
+        dates_data.sort(key=lambda x: datetime.strptime(x[0], "%d-%m-%Y"))
+    except ValueError:
+        pass
+    
+    num_dates = len(dates_data)
+    cols = min(4, num_dates)
+    
+    # Create columns
+    columns = st.columns(cols)
+    
+    row = 0
+    col = 0
+    
+    for date_str, shifts_data in dates_data:
+        with columns[col]:
+            # Create date frame container
+            st.markdown(f"""
+            <div style="border: 1px solid #ddd; padding: 10px; margin: 5px; border-radius: 5px; background-color: #ffffcc;">
+                <div style="text-align: center; font-weight: bold;">{date_str}</div>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            # Date button
+            date_key = f"date_{date_str.replace('-', '_')}"
+            if date_key not in st.session_state.date_buttons:
+                st.session_state.date_buttons[date_key] = {
+                    'date': date_str,
+                    'shifts': [],
+                    'expanded': False,
+                    'selected': False
+                }
+            
+            # Button to toggle all shifts
+            if st.button(f"Toggle {date_str}", key=f"toggle_{date_key}"):
+                # Toggle all shifts for this date
+                for shift_data in st.session_state.date_buttons[date_key]['shifts']:
+                    shift_data['selected'] = not shift_data.get('selected', False)
+                st.rerun()
+            
+            # Button to show/hide shifts
+            expand_label = "🔽 Show Shifts" if not st.session_state.date_buttons[date_key].get('expanded', False) else "🔼 Hide Shifts"
+            if st.button(expand_label, key=f"expand_{date_key}"):
+                st.session_state.date_buttons[date_key]['expanded'] = not st.session_state.date_buttons[date_key].get('expanded', False)
+                st.rerun()
+            
+            # Show shift checkboxes if expanded
+            if st.session_state.date_buttons[date_key].get('expanded', False):
+                shift_vars = []
+                for shift, is_mock in shifts_data:
+                    shift_key = f"shift_{date_str.replace('-', '_')}_{shift.replace(' ', '_')}"
+                    
+                    # Initialize if not exists
+                    if shift_key not in st.session_state:
+                        st.session_state[shift_key] = False
+                    
+                    shift_selected = st.checkbox(
+                        f"{shift} (Mock)" if is_mock else shift,
+                        value=st.session_state[shift_key],
+                        key=shift_key
+                    )
+                    st.session_state[shift_key] = shift_selected
+                    
+                    shift_data = {
+                        'shift': shift,
+                        'is_mock': is_mock,
+                        'selected': shift_selected
+                    }
+                    shift_vars.append(shift_data)
+                
+                st.session_state.date_buttons[date_key]['shifts'] = shift_vars
+            
+            date_data = {
+                'date': date_str,
+                'shifts': st.session_state.date_buttons[date_key]['shifts'] if 'shifts' in st.session_state.date_buttons[date_key] else [],
+                'expanded': st.session_state.date_buttons[date_key]['expanded']
+            }
+            st.session_state.date_vars.append(date_data)
+        
+        col += 1
+        if col >= cols:
+            col = 0
+            row += 1
+
+def get_selected_dates():
+    """Get all selected dates and shifts"""
+    selected_dates = {}
+    
+    for date_data in st.session_state.date_vars:
+        selected_shifts = []
+        for shift_data in date_data['shifts']:
+            shift_key = f"shift_{date_data['date'].replace('-', '_')}_{shift_data['shift'].replace(' ', '_')}"
+            if shift_key in st.session_state and st.session_state[shift_key]:
+                selected_shifts.append(shift_data['shift'])
+        
+        if selected_shifts:
+            selected_dates[date_data['date']] = selected_shifts
+    
+    return selected_dates
+
+def toggle_all_dates():
+    """Toggle selection of all dates"""
+    if 'select_all_var' not in st.session_state:
+        st.session_state.select_all_var = False
+    
+    st.session_state.select_all_var = not st.session_state.select_all_var
+    
+    # Update all shift selections
+    for date_data in st.session_state.date_vars:
+        for shift_data in date_data['shifts']:
+            shift_key = f"shift_{date_data['date'].replace('-', '_')}_{shift_data['shift'].replace(' ', '_')}"
+            st.session_state[shift_key] = st.session_state.select_all_var
+
+def update_date_button_color(date_str):
+    """Update date button color based on selections"""
+    # This is handled in the create_date_grid function
+    pass
 
 # ============================================================
 # MAIN APPLICATION
@@ -1248,7 +1433,7 @@ def main():
             
             st.divider()
             
-            # Step 3: Venue and Date Selection - ENHANCED VERSION
+            # Step 3: Venue and Date Selection (TKINTER-STYLE)
             st.subheader("Step 3: Select Venue & Dates")
             
             if not st.session_state.venue_df.empty:
@@ -1272,129 +1457,37 @@ def main():
                             date_shifts = {}
                             for date in venue_dates_df['DATE'].unique():
                                 shifts = venue_dates_df[venue_dates_df['DATE'] == date]['SHIFT'].unique()
-                                date_shifts[date] = list(shifts)
+                                date_shifts[date] = [(shift, False) for shift in shifts]  # No mock test for normal mode
                             
-                            # Display date and shift selection in a grid (3-4 columns)
-                            st.write("**Select Dates and Shifts:**")
+                            # Display date and shift selection in TKINTER-style grid
+                            st.write("**Select Date & Shift:**")
                             
-                            # Initialize session state for date selections if not exists
-                            if 'date_selections' not in st.session_state:
-                                st.session_state.date_selections = {}
-                            if 'shift_selections' not in st.session_state:
-                                st.session_state.shift_selections = {}
-                            if 'date_expanded' not in st.session_state:
-                                st.session_state.date_expanded = {}
-                            
-                            # Create "Select All Dates" checkbox
-                            col_select_all, _ = st.columns([1, 3])
-                            with col_select_all:
-                                select_all = st.checkbox("Select All Dates", key="select_all_dates")
+                            # "Select All Dates" checkbox
+                            select_all = st.checkbox("Select All Dates", value=False, key="select_all_checkbox")
                             
                             if select_all:
+                                # Initialize all shifts as selected
                                 for date in date_shifts.keys():
-                                    date_key = f"date_{date}"
-                                    st.session_state.date_selections[date_key] = True
-                                    for shift in date_shifts[date]:
-                                        shift_key = f"shift_{date}_{shift}"
-                                        st.session_state.shift_selections[shift_key] = True
+                                    for shift, is_mock in date_shifts[date]:
+                                        shift_key = f"shift_{date.replace('-', '_')}_{shift.replace(' ', '_')}"
+                                        st.session_state[shift_key] = True
                             
-                            # Create grid layout (3-4 dates per row)
-                            dates_list = sorted(date_shifts.keys())
-                            num_cols = min(4, len(dates_list))  # Up to 4 columns
+                            # Create dates data for grid
+                            dates_data = []
+                            for date, shifts in date_shifts.items():
+                                dates_data.append((date, shifts))
                             
-                            if dates_list:
-                                # Create columns
-                                cols = st.columns(num_cols)
-                                
-                                selected_dates = {}
-                                
-                                for idx, date in enumerate(dates_list):
-                                    col_idx = idx % num_cols
-                                    with cols[col_idx]:
-                                        # Create a unique key for each date
-                                        date_key = f"date_{date.replace('-', '_').replace(' ', '_')}"
-                                        
-                                        # Initialize if not exists
-                                        if date_key not in st.session_state.date_selections:
-                                            st.session_state.date_selections[date_key] = False
-                                        if date_key not in st.session_state.date_expanded:
-                                            st.session_state.date_expanded[date_key] = False
-                                        
-                                        # Determine button color based on shift selections
-                                        all_selected = True
-                                        any_selected = False
-                                        for shift in date_shifts[date]:
-                                            shift_key = f"shift_{date.replace('-', '_').replace(' ', '_')}_{shift.replace(' ', '_')}"
-                                            if shift_key not in st.session_state.shift_selections:
-                                                st.session_state.shift_selections[shift_key] = False
-                                            if st.session_state.shift_selections[shift_key]:
-                                                any_selected = True
-                                            else:
-                                                all_selected = False
-                                        
-                                        # Set button color
-                                        if all_selected:
-                                            button_color = "success"  # Green
-                                            button_text = f"✅ {date}"
-                                        elif any_selected:
-                                            button_color = "warning"  # Orange
-                                            button_text = f"⚠️ {date}"
-                                        else:
-                                            button_color = "secondary"  # Yellow
-                                            button_text = f"📅 {date}"
-                                        
-                                        # Date button (simulating single-click to toggle all shifts)
-                                        if st.button(button_text, key=f"btn_{date_key}", 
-                                                   type=button_color,
-                                                   help=f"Click to toggle all shifts for {date}. Click 'Show Shifts' to show/hide shift checkboxes."):
-                                            # Toggle all shifts for this date
-                                            new_state = not all_selected
-                                            for shift in date_shifts[date]:
-                                                shift_key = f"shift_{date.replace('-', '_').replace(' ', '_')}_{shift.replace(' ', '_')}"
-                                                st.session_state.shift_selections[shift_key] = new_state
-                                            st.rerun()
-                                        
-                                        # Show/Hide shifts button
-                                        expand_label = "🔽 Show Shifts" if not st.session_state.date_expanded.get(date_key, False) else "🔼 Hide Shifts"
-                                        if st.button(expand_label, key=f"expand_{date_key}", type="secondary"):
-                                            st.session_state.date_expanded[date_key] = not st.session_state.date_expanded.get(date_key, False)
-                                            st.rerun()
-                                        
-                                        # Show shift checkboxes if expanded
-                                        if st.session_state.date_expanded.get(date_key, False):
-                                            selected_shifts_for_date = []
-                                            for shift in date_shifts[date]:
-                                                shift_key = f"shift_{date.replace('-', '_').replace(' ', '_')}_{shift.replace(' ', '_')}"
-                                                shift_selected = st.checkbox(
-                                                    shift,
-                                                    value=st.session_state.shift_selections[shift_key],
-                                                    key=shift_key
-                                                )
-                                                st.session_state.shift_selections[shift_key] = shift_selected
-                                                
-                                                if shift_selected:
-                                                    selected_shifts_for_date.append(shift)
-                                            
-                                            if selected_shifts_for_date:
-                                                selected_dates[date] = selected_shifts_for_date
-                                        else:
-                                            # Still need to collect selected shifts even if not expanded
-                                            selected_shifts_for_date = []
-                                            for shift in date_shifts[date]:
-                                                shift_key = f"shift_{date.replace('-', '_').replace(' ', '_')}_{shift.replace(' ', '_')}"
-                                                if st.session_state.shift_selections[shift_key]:
-                                                    selected_shifts_for_date.append(shift)
-                                            
-                                            if selected_shifts_for_date:
-                                                selected_dates[date] = selected_shifts_for_date
-                                
-                                st.session_state.selected_dates = selected_dates
-                                
-                                # Display selection summary
-                                if selected_dates:
-                                    st.info(f"✅ Selected {len(selected_dates)} date(s) with shifts")
-                                else:
-                                    st.warning("⚠️ No dates selected")
+                            # Create the grid layout
+                            create_date_grid(dates_data)
+                            
+                            # Get selected dates
+                            st.session_state.selected_dates = get_selected_dates()
+                            
+                            # Display selection summary
+                            if st.session_state.selected_dates:
+                                st.info(f"✅ Selected {len(st.session_state.selected_dates)} date(s) with shifts")
+                            else:
+                                st.warning("⚠️ No dates selected")
                         else:
                             st.warning("⚠️ No date information found for selected venue")
                 else:
@@ -1408,7 +1501,7 @@ def main():
             
             if st.session_state.io_df is not None and not st.session_state.io_df.empty:
                 # Filter IOs by venue centre code
-                venue_row = venue_dates_df.iloc[0] if not venue_dates_df.empty else None
+                venue_row = venue_dates_df.iloc[0] if 'venue_dates_df' in locals() and not venue_dates_df.empty else None
                 if venue_row is not None and 'CENTRE_CODE' in venue_row:
                     centre_code = str(venue_row['CENTRE_CODE']).zfill(4)
                     filtered_io = st.session_state.io_df[
@@ -1477,7 +1570,7 @@ def main():
                         
                         # Allocation button
                         if st.button("✅ Allocate Selected IO to Dates", use_container_width=True, type="primary"):
-                            if not selected_dates:
+                            if not st.session_state.selected_dates:
                                 st.error("❌ Please select at least one date and shift")
                             else:
                                 # Get allocation reference
@@ -1487,7 +1580,7 @@ def main():
                                     allocation_count = 0
                                     conflicts = []
                                     
-                                    for date, shifts in selected_dates.items():
+                                    for date, shifts in st.session_state.selected_dates.items():
                                         for shift in shifts:
                                             # Check for conflict
                                             conflict = check_allocation_conflict(
@@ -1524,11 +1617,6 @@ def main():
                                     if allocation_count > 0:
                                         if save_data():
                                             st.success(f"✅ Allocated {io_info['name']} to {allocation_count} shift(s)!")
-                                            # Clear date selections
-                                            for key in list(st.session_state.date_selections.keys()):
-                                                st.session_state.date_selections[key] = False
-                                            for key in list(st.session_state.shift_selections.keys()):
-                                                st.session_state.shift_selections[key] = False
                                             time.sleep(2)
                                             st.rerun()
                                         else:
