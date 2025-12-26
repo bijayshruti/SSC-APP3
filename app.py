@@ -12,30 +12,124 @@ import tempfile
 from collections import defaultdict
 import time
 import shutil
+import requests
+from urllib.parse import urljoin
 
 # ============================================================
-# FIXED FOLDER PATH - CHANGE THIS TO YOUR DATA FOLDER
+# GITHUB REPOSITORY CONFIGURATION
 # ============================================================
-DATA_DIR = Path(r"C:\Users\user\Desktop\CC_FSO_EY ALLOCATION")
+# Configuration loaded from Streamlit secrets
+GITHUB_OWNER = st.secrets.get("GITHUB_OWNER", "your_github_username")
+GITHUB_REPO = st.secrets.get("GITHUB_REPO", "cc_fso_allocation_data")
+GITHUB_TOKEN = st.secrets.get("GITHUB_TOKEN", "")
+GITHUB_BRANCH = st.secrets.get("GITHUB_BRANCH", "main")
 
-# Create directory if it doesn't exist
-DATA_DIR.mkdir(parents=True, exist_ok=True)
+# Base URLs for GitHub API and raw content
+GITHUB_API_BASE = "https://api.github.com"
+GITHUB_RAW_BASE = "https://raw.githubusercontent.com"
 
-# File paths in the chosen folder
-CONFIG_FILE = DATA_DIR / "config.json"
-DATA_FILE = DATA_DIR / "allocations_data.json"
-REFERENCE_FILE = DATA_DIR / "allocation_references.json"
-DELETED_RECORDS_FILE = DATA_DIR / "deleted_records.json"
-BACKUP_DIR = DATA_DIR / "backups"
+# Headers for authenticated API requests
+API_HEADERS = {
+    "Authorization": f"token {GITHUB_TOKEN}",
+    "Accept": "application/vnd.github.v3+json"
+}
 
-# Configure logging to the chosen folder
+# File paths in the GitHub repository
+CONFIG_FILE_PATH = "config.json"
+DATA_FILE_PATH = "allocations_data.json"
+REFERENCE_FILE_PATH = "allocation_references.json"
+DELETED_RECORDS_FILE_PATH = "deleted_records.json"
+
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    filename=DATA_DIR / 'app.log'
+    filename='app.log'
 )
 
-# Initialize session state
+# ============================================================
+# GITHUB DATA HANDLING FUNCTIONS
+# ============================================================
+
+def get_github_raw_url(file_path):
+    """Construct URL to fetch raw file content from GitHub"""
+    return f"{GITHUB_RAW_BASE}/{GITHUB_OWNER}/{GITHUB_REPO}/{GITHUB_BRANCH}/{file_path}"
+
+def get_github_api_url(file_path=None):
+    """Construct URL for GitHub API calls"""
+    if file_path:
+        return f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{file_path}"
+    else:
+        return f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}"
+
+def load_from_github(file_path):
+    """Load JSON data from GitHub repository"""
+    url = get_github_raw_url(file_path)
+    headers = {}
+    
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"token {GITHUB_TOKEN}"
+    
+    try:
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        logging.warning(f"Could not load {file_path} from GitHub: {e}")
+        return None
+    except json.JSONDecodeError as e:
+        logging.error(f"Failed to parse JSON from {file_path}: {e}")
+        return None
+
+def save_to_github(file_path, data):
+    """Save or update a JSON file in GitHub repository"""
+    api_url = get_github_api_url(file_path)
+    
+    # Get SHA if file exists
+    sha = None
+    try:
+        get_response = requests.get(api_url, headers=API_HEADERS)
+        if get_response.status_code == 200:
+            sha = get_response.json().get("sha")
+    except requests.exceptions.RequestException:
+        pass
+    
+    # Prepare payload
+    content = json.dumps(data, indent=4, default=str)
+    content_b64 = base64.b64encode(content.encode()).decode()
+    
+    payload = {
+        "message": f"Update {file_path} via Streamlit App - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        "content": content_b64,
+        "branch": GITHUB_BRANCH
+    }
+    if sha:
+        payload["sha"] = sha
+    
+    try:
+        response = requests.put(api_url, headers=API_HEADERS, json=payload)
+        response.raise_for_status()
+        logging.info(f"Successfully saved {file_path} to GitHub")
+        return True
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Failed to save {file_path} to GitHub: {e}")
+        return False
+
+def check_github_connection():
+    """Check if we can connect to GitHub repository"""
+    try:
+        response = requests.get(
+            get_github_api_url(),
+            headers=API_HEADERS,
+            timeout=10
+        )
+        return response.status_code == 200
+    except:
+        return False
+
+# ============================================================
+# INITIALIZE SESSION STATE
+# ============================================================
 def init_session_state():
     default_states = {
         'io_df': None,
@@ -72,8 +166,9 @@ def init_session_state():
         'deletion_count': 0,
         'bulk_delete_mode': False,
         'bulk_delete_selected': [],
-        'data_folder_initialized': True,  # Set to True since we have fixed path
-        'show_folder_info': True
+        'github_connected': False,
+        'last_sync_time': None,
+        'show_github_info': True
     }
     
     for key, value in default_states.items():
@@ -92,109 +187,53 @@ Michael Wilson,North 24 Parganas,2002,9876543214,michael@example.com"""
         st.session_state.io_df = pd.read_csv(io.StringIO(default_data))
         st.session_state.io_df['CENTRE_CODE'] = st.session_state.io_df['CENTRE_CODE'].astype(str).str.zfill(4)
 
-# Migrate old data from app directory to the fixed folder
-def migrate_old_data():
-    """Migrate data from old location to new fixed folder"""
-    old_base = Path(__file__).parent  # Old app folder
-    
-    files_to_migrate = [
-        ("config.json", CONFIG_FILE),
-        ("allocations_data.json", DATA_FILE),
-        ("allocation_references.json", REFERENCE_FILE),
-        ("deleted_records.json", DELETED_RECORDS_FILE),
-        ("allocation_references.json", REFERENCE_FILE),  # Your file name
-        ("allocations_data.json", DATA_FILE),  # Your file name
-        ("deleted_records.json", DELETED_RECORDS_FILE)  # Your file name
-    ]
-    
-    migrated_files = []
-    
-    for old_name, new_path in files_to_migrate:
-        # Try different possible old file names
-        old_path = old_base / old_name
-        
-        if old_path.exists() and not new_path.exists():
-            try:
-                # Copy file to new location
-                shutil.copy2(old_path, new_path)
-                migrated_files.append(old_name)
-                logging.info(f"Migrated {old_name} to {new_path}")
-            except Exception as e:
-                logging.error(f"Failed to migrate {old_name}: {str(e)}")
-    
-    # Also check for files with similar names
-    for json_file in old_base.glob("*.json"):
-        file_name = json_file.name.lower()
-        
-        # Map different file names
-        if "allocation" in file_name and "data" in file_name and not DATA_FILE.exists():
-            try:
-                shutil.copy2(json_file, DATA_FILE)
-                migrated_files.append(json_file.name)
-            except Exception as e:
-                logging.error(f"Failed to migrate {json_file.name}: {str(e)}")
-        
-        elif "reference" in file_name and not REFERENCE_FILE.exists():
-            try:
-                shutil.copy2(json_file, REFERENCE_FILE)
-                migrated_files.append(json_file.name)
-            except Exception as e:
-                logging.error(f"Failed to migrate {json_file.name}: {str(e)}")
-    
-    return migrated_files
-
-# Load data from files
+# ============================================================
+# LOAD AND SAVE DATA
+# ============================================================
 def load_data():
+    """Load all data from GitHub repository"""
     try:
-        # Migrate old data if needed (only once)
-        if 'data_migrated' not in st.session_state:
-            migrated = migrate_old_data()
-            if migrated:
-                st.success(f"✅ Migrated {len(migrated)} files to: {DATA_DIR}")
-                time.sleep(2)
-            st.session_state.data_migrated = True
-        
         # Load config
-        if CONFIG_FILE.exists():
-            with open(CONFIG_FILE, 'r') as f:
-                config = json.load(f)
-                if isinstance(config, dict):
-                    if 'remuneration_rates' in config:
-                        st.session_state.remuneration_rates.update(config['remuneration_rates'])
-                    if 'ey_personnel_list' in config:
-                        st.session_state.ey_personnel_list = config['ey_personnel_list']
+        config = load_from_github(CONFIG_FILE_PATH)
+        if config and isinstance(config, dict):
+            if 'remuneration_rates' in config:
+                st.session_state.remuneration_rates.update(config['remuneration_rates'])
+            if 'ey_personnel_list' in config:
+                st.session_state.ey_personnel_list = config['ey_personnel_list']
         
         # Load exam data
-        if DATA_FILE.exists():
-            with open(DATA_FILE, 'r') as f:
-                data = json.load(f)
-                if isinstance(data, dict):
-                    st.session_state.exam_data = data
+        exam_data = load_from_github(DATA_FILE_PATH)
+        if exam_data and isinstance(exam_data, dict):
+            st.session_state.exam_data = exam_data
         
         # Load references
-        if REFERENCE_FILE.exists():
-            with open(REFERENCE_FILE, 'r') as f:
-                st.session_state.allocation_references = json.load(f)
+        references = load_from_github(REFERENCE_FILE_PATH)
+        if references and isinstance(references, dict):
+            st.session_state.allocation_references = references
         
         # Load deleted records
-        if DELETED_RECORDS_FILE.exists():
-            with open(DELETED_RECORDS_FILE, 'r') as f:
-                st.session_state.deleted_records = json.load(f)
-                
+        deleted = load_from_github(DELETED_RECORDS_FILE_PATH)
+        if deleted and isinstance(deleted, list):
+            st.session_state.deleted_records = deleted
+        
+        # Set connection status
+        st.session_state.github_connected = True
+        st.session_state.last_sync_time = datetime.now()
+        
     except Exception as e:
-        st.error(f"Error loading data: {str(e)}")
-        logging.error(f"Error loading data: {str(e)}")
+        st.session_state.github_connected = False
+        logging.error(f"Error loading data from GitHub: {str(e)}")
 
-# Save data to files
 def save_data():
+    """Save all data to GitHub repository"""
     try:
         # Save config
         config = {
             'remuneration_rates': st.session_state.remuneration_rates,
             'ey_personnel_list': st.session_state.ey_personnel_list
         }
-        with open(CONFIG_FILE, 'w') as f:
-            json.dump(config, f, indent=4)
+        if not save_to_github(CONFIG_FILE_PATH, config):
+            return False
         
         # Save exam data
         if st.session_state.current_exam_key:
@@ -203,38 +242,42 @@ def save_data():
                 'ey_allocations': st.session_state.ey_allocation
             }
         
-        with open(DATA_FILE, 'w') as f:
-            json.dump(st.session_state.exam_data, f, indent=4, default=str)
+        if not save_to_github(DATA_FILE_PATH, st.session_state.exam_data):
+            return False
         
         # Save references
-        with open(REFERENCE_FILE, 'w') as f:
-            json.dump(st.session_state.allocation_references, f, indent=4)
+        if not save_to_github(REFERENCE_FILE_PATH, st.session_state.allocation_references):
+            return False
         
         # Save deleted records
-        with open(DELETED_RECORDS_FILE, 'w') as f:
-            json.dump(st.session_state.deleted_records, f, indent=4, default=str)
+        if not save_to_github(DELETED_RECORDS_FILE_PATH, st.session_state.deleted_records):
+            return False
         
-        logging.info("Data saved successfully")
+        st.session_state.last_sync_time = datetime.now()
+        logging.info("All data saved successfully to GitHub")
         return True
         
     except Exception as e:
-        st.error(f"Error saving data: {str(e)}")
-        logging.error(f"Error saving data: {str(e)}")
+        st.error(f"Error saving data to GitHub: {str(e)}")
+        logging.error(f"Error saving data to GitHub: {str(e)}")
         return False
 
-# Helper functions
+# ============================================================
+# HELPER FUNCTIONS
+# ============================================================
+
 def create_backup(exam_key=None):
-    """Create a backup of exam data"""
+    """Create a backup of exam data in GitHub"""
     try:
-        BACKUP_DIR.mkdir(exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         if exam_key:
-            backup_file = BACKUP_DIR / f"backup_{exam_key.replace(' ', '_').replace('-', '_')}_{timestamp}.json"
+            backup_file = f"backup_{exam_key.replace(' ', '_').replace('-', '_')}_{timestamp}.json"
         else:
-            backup_file = BACKUP_DIR / f"full_backup_{timestamp}.json"
+            backup_file = f"full_backup_{timestamp}.json"
         
-        with open(backup_file, 'w') as f:
-            json.dump(st.session_state.exam_data, f, indent=4, default=str)
+        # Save backup as a separate file in GitHub
+        backup_data = st.session_state.exam_data.copy()
+        save_to_github(f"backups/{backup_file}", backup_data)
         
         logging.info(f"Created backup: {backup_file}")
         return backup_file
@@ -243,23 +286,26 @@ def create_backup(exam_key=None):
         return None
 
 def restore_from_backup(backup_file):
-    """Restore exam data from backup"""
+    """Restore exam data from backup in GitHub"""
     try:
-        with open(backup_file, 'r') as f:
-            restored_data = json.load(f)
+        # Load backup from GitHub
+        backup_url = f"backups/{backup_file}"
+        restored_data = load_from_github(backup_url)
         
-        st.session_state.exam_data = restored_data
-        
-        # Clear current allocations
-        st.session_state.allocation = []
-        st.session_state.ey_allocation = []
-        st.session_state.current_exam_key = ""
-        st.session_state.exam_name = ""
-        st.session_state.exam_year = ""
-        
-        save_data()
-        logging.info(f"Restored data from backup: {backup_file}")
-        return True
+        if restored_data:
+            st.session_state.exam_data = restored_data
+            
+            # Clear current allocations
+            st.session_state.allocation = []
+            st.session_state.ey_allocation = []
+            st.session_state.current_exam_key = ""
+            st.session_state.exam_name = ""
+            st.session_state.exam_year = ""
+            
+            save_data()
+            logging.info(f"Restored data from backup: {backup_file}")
+            return True
+        return False
     except Exception as e:
         logging.error(f"Error restoring from backup: {str(e)}")
         return False
@@ -267,7 +313,6 @@ def restore_from_backup(backup_file):
 def check_allocation_conflict(person_name, date, shift, venue, role, allocation_type):
     """Check for allocation conflicts"""
     if allocation_type == "IO":
-        # Check for duplicate allocation
         duplicate = any(
             alloc['IO Name'] == person_name and 
             alloc['Date'] == date and 
@@ -279,7 +324,6 @@ def check_allocation_conflict(person_name, date, shift, venue, role, allocation_
         if duplicate:
             return f"Duplicate allocation found! {person_name} is already allocated to {venue} on {date} ({shift}) as {role}."
         
-        # For Centre Coordinator: Cannot be assigned to multiple venues on same date and shift
         if role == "Centre Coordinator":
             conflict = any(
                 alloc['IO Name'] == person_name and 
@@ -300,7 +344,6 @@ def check_allocation_conflict(person_name, date, shift, venue, role, allocation_
                 return f"Centre Coordinator conflict! {person_name} is already allocated to {existing_venue} on {date} ({shift}). Cannot assign to {venue}."
     
     elif allocation_type == "EY":
-        # Check for duplicate allocation
         duplicate = any(
             alloc['EY Personnel'] == person_name and 
             alloc['Date'] == date and 
@@ -311,7 +354,6 @@ def check_allocation_conflict(person_name, date, shift, venue, role, allocation_
         if duplicate:
             return f"Duplicate EY allocation found! {person_name} is already allocated to {venue} on {date} ({shift})."
         
-        # EY Personnel: Cannot be assigned to multiple venues on same date and shift
         conflict = any(
             alloc['EY Personnel'] == person_name and 
             alloc['Date'] == date and 
@@ -341,10 +383,8 @@ def get_allocation_reference(allocation_type):
         st.session_state.allocation_references[exam_key] = {}
     
     if allocation_type in st.session_state.allocation_references[exam_key]:
-        # Ask user if they want to use existing or create new
         existing_ref = st.session_state.allocation_references[exam_key][allocation_type]
         
-        # Show existing reference in a popup-like container
         with st.expander(f"Existing reference found for {allocation_type}", expanded=True):
             st.info(f"**Order No.**: {existing_ref.get('order_no', 'N/A')}")
             st.info(f"**Page No.**: {existing_ref.get('page_no', 'N/A')}")
@@ -360,10 +400,8 @@ def get_allocation_reference(allocation_type):
                     st.session_state.reference_type = allocation_type
                     st.rerun()
         
-        # Wait for user choice
         st.stop()
     else:
-        # No existing reference, create new
         st.session_state.reference_dialog_open = True
         st.session_state.reference_type = allocation_type
         st.rerun()
@@ -448,10 +486,8 @@ def ask_for_deletion_reference(allocation_type, entries_count):
     st.session_state.deletion_type = allocation_type
     st.session_state.deletion_count = entries_count
     
-    # Show dialog
     show_deletion_dialog()
     
-    # Wait for result
     if 'deletion_result' in st.session_state and st.session_state.deletion_result:
         result = st.session_state.deletion_result
         del st.session_state.deletion_result
@@ -459,7 +495,6 @@ def ask_for_deletion_reference(allocation_type, entries_count):
     
     return None
 
-# Additional functions
 def open_bulk_delete_window():
     """Open bulk delete dialog"""
     st.session_state.bulk_delete_mode = True
@@ -502,7 +537,6 @@ def view_allocation_references():
         refs_df = pd.DataFrame(all_refs)
         st.dataframe(refs_df, use_container_width=True, hide_index=True)
         
-        # Delete options
         st.subheader("🗑️ Delete References")
         
         col_del1, col_del2, col_del3 = st.columns(3)
@@ -573,7 +607,6 @@ def view_deleted_records():
         deleted_df = pd.DataFrame(deleted_list)
         st.dataframe(deleted_df, use_container_width=True, hide_index=True)
         
-        # Delete options
         st.subheader("🗑️ Delete Records Permanently")
         
         col_del1, col_del2 = st.columns(2)
@@ -600,27 +633,22 @@ def export_allocations_report():
         return
     
     try:
-        # Create Excel writer
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # IO Allocations
             if st.session_state.allocation:
                 alloc_df = pd.DataFrame(st.session_state.allocation)
                 alloc_df.to_excel(writer, index=False, sheet_name='IO Allocations')
             
-            # EY Allocations
             if st.session_state.ey_allocation:
                 ey_alloc_df = pd.DataFrame(st.session_state.ey_allocation)
                 ey_alloc_df.to_excel(writer, index=False, sheet_name='EY Allocations')
             
-            # Deleted Records
             if st.session_state.deleted_records:
                 deleted_df = pd.DataFrame(st.session_state.deleted_records)
                 deleted_df.to_excel(writer, index=False, sheet_name='Deleted Records')
             
             writer.save()
         
-        # Offer download
         filename = f"Allocation_Report_{st.session_state.current_exam_key.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
         
         st.download_button(
@@ -641,7 +669,6 @@ def export_remuneration_report():
         return
     
     try:
-        # Calculate IO remuneration
         io_remuneration = []
         if st.session_state.allocation:
             alloc_df = pd.DataFrame(st.session_state.allocation)
@@ -668,7 +695,6 @@ def export_remuneration_report():
                     'Amount (₹)': amount
                 })
         
-        # Calculate EY remuneration
         ey_remuneration = []
         if st.session_state.ey_allocation:
             ey_df = pd.DataFrame(st.session_state.ey_allocation)
@@ -681,15 +707,12 @@ def export_remuneration_report():
                     'Amount (₹)': amount
                 })
         
-        # Create Excel writer
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # IO Remuneration
             if io_remuneration:
                 io_rem_df = pd.DataFrame(io_remuneration)
                 io_rem_df.to_excel(writer, index=False, sheet_name='IO Remuneration')
                 
-                # IO Summary
                 io_summary = []
                 for io_name in set(item['IO Name'] for item in io_remuneration):
                     io_data = [item for item in io_remuneration if item['IO Name'] == io_name]
@@ -706,12 +729,10 @@ def export_remuneration_report():
                     io_summary_df = pd.DataFrame(io_summary)
                     io_summary_df.to_excel(writer, index=False, sheet_name='IO Summary')
             
-            # EY Remuneration
             if ey_remuneration:
                 ey_rem_df = pd.DataFrame(ey_remuneration)
                 ey_rem_df.to_excel(writer, index=False, sheet_name='EY Remuneration')
                 
-                # EY Summary
                 ey_summary = []
                 for ey_person in set(item['EY Personnel'] for item in ey_remuneration):
                     ey_data = [item for item in ey_remuneration if item['EY Personnel'] == ey_person]
@@ -728,7 +749,6 @@ def export_remuneration_report():
                     ey_summary_df = pd.DataFrame(ey_summary)
                     ey_summary_df.to_excel(writer, index=False, sheet_name='EY Summary')
             
-            # Rates
             rates_data = [
                 {'Category': 'Multiple Shifts', 'Amount (₹)': st.session_state.remuneration_rates['multiple_shifts'], 'Reference': 'Per allocation'},
                 {'Category': 'Single Shift', 'Amount (₹)': st.session_state.remuneration_rates['single_shift'], 'Reference': 'Per allocation'},
@@ -740,7 +760,6 @@ def export_remuneration_report():
             
             writer.save()
         
-        # Offer download
         filename = f"Remuneration_Report_{st.session_state.current_exam_key.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
         
         st.download_button(
@@ -761,10 +780,8 @@ def export_summary_report():
         return
     
     try:
-        # Create summary data
         summary_data = []
         
-        # IO Summary
         if st.session_state.allocation:
             alloc_df = pd.DataFrame(st.session_state.allocation)
             io_summary = alloc_df.groupby('IO Name').agg({
@@ -783,7 +800,6 @@ def export_summary_report():
                     'Total Shifts': row['Total Shifts']
                 })
         
-        # EY Summary
         if st.session_state.ey_allocation:
             ey_df = pd.DataFrame(st.session_state.ey_allocation)
             ey_summary = ey_df.groupby('EY Personnel').agg({
@@ -802,15 +818,12 @@ def export_summary_report():
                     'Total Shifts': row['Total Shifts']
                 })
         
-        # Create Excel writer
         output = io.BytesIO()
         with pd.ExcelWriter(output, engine='openpyxl') as writer:
-            # Summary
             if summary_data:
                 summary_df = pd.DataFrame(summary_data)
                 summary_df.to_excel(writer, index=False, sheet_name='Summary')
             
-            # Date Summary
             if st.session_state.allocation:
                 alloc_df = pd.DataFrame(st.session_state.allocation)
                 date_summary = alloc_df.groupby('Date').agg({
@@ -823,7 +836,6 @@ def export_summary_report():
             
             writer.save()
         
-        # Offer download
         filename = f"Summary_Report_{st.session_state.current_exam_key.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
         
         st.download_button(
@@ -845,7 +857,6 @@ def show_io_summary():
     
     alloc_df = pd.DataFrame(st.session_state.allocation)
     
-    # Group by IO Name
     io_summary = alloc_df.groupby('IO Name').agg({
         'Venue': lambda x: ', '.join(sorted(set(x))),
         'Date': lambda x: ', '.join(sorted(set(x))),
@@ -857,7 +868,6 @@ def show_io_summary():
     
     st.dataframe(io_summary, use_container_width=True, hide_index=True)
     
-    # Statistics
     col_stat1, col_stat2, col_stat3 = st.columns(3)
     with col_stat1:
         st.metric("Total IOs", len(io_summary))
@@ -877,7 +887,6 @@ def show_ey_summary():
     
     ey_df = pd.DataFrame(st.session_state.ey_allocation)
     
-    # Group by EY Personnel
     ey_summary = ey_df.groupby('EY Personnel').agg({
         'Venue': lambda x: ', '.join(sorted(set(x))),
         'Date': lambda x: ', '.join(sorted(set(x))),
@@ -888,7 +897,6 @@ def show_ey_summary():
     
     st.dataframe(ey_summary, use_container_width=True, hide_index=True)
     
-    # Statistics
     col_stat1, col_stat2, col_stat3 = st.columns(3)
     with col_stat1:
         st.metric("Total EY Personnel", len(ey_summary))
@@ -908,7 +916,6 @@ def show_date_summary():
     
     alloc_df = pd.DataFrame(st.session_state.allocation)
     
-    # Group by Date
     date_summary = alloc_df.groupby('Date').agg({
         'Venue': 'nunique',
         'IO Name': 'nunique',
@@ -920,44 +927,33 @@ def show_date_summary():
     
     st.dataframe(date_summary, use_container_width=True, hide_index=True)
 
-def show_data_folder_info():
-    """Show information about the current data folder"""
-    if DATA_DIR and DATA_DIR.exists():
-        with st.sidebar:
-            st.markdown("---")
-            st.markdown("**📁 Data Folder Info**")
-            
-            # Count files
-            json_files = list(DATA_DIR.glob("*.json"))
-            backup_files = list(BACKUP_DIR.glob("*.json")) if BACKUP_DIR.exists() else []
-            
-            # Show path (truncated if too long)
-            folder_path = str(DATA_DIR)
-            if len(folder_path) > 40:
-                display_path = "..." + folder_path[-37:]
-            else:
-                display_path = folder_path
-            
-            st.caption(f"`{display_path}`")
-            
-            # Show file counts
-            col1, col2 = st.columns(2)
-            with col1:
-                st.metric("📄 Files", len(json_files))
-            with col2:
-                st.metric("💾 Backups", len(backup_files))
-            
-            # Show last backup time
-            if backup_files:
-                latest_backup = max(backup_files, key=lambda x: x.stat().st_mtime)
-                backup_time = datetime.fromtimestamp(latest_backup.stat().st_mtime)
-                st.caption(f"Last backup: {backup_time.strftime('%d-%m-%Y %H:%M')}")
-            
-            # Show file sizes
-            total_size = sum(f.stat().st_size for f in DATA_DIR.rglob('*') if f.is_file())
-            st.caption(f"Total size: {total_size / 1024:.1f} KB")
+def show_github_info():
+    """Show GitHub connection information"""
+    with st.sidebar:
+        st.markdown("---")
+        st.markdown("**🌐 GitHub Connection**")
+        
+        if st.session_state.github_connected:
+            st.success("✅ Connected to GitHub")
+            if st.session_state.last_sync_time:
+                sync_time = st.session_state.last_sync_time.strftime('%H:%M:%S')
+                st.caption(f"Last sync: {sync_time}")
+        else:
+            st.error("❌ Not connected")
+            if not GITHUB_TOKEN:
+                st.caption("GitHub token not configured")
+        
+        st.caption(f"Repository: {GITHUB_OWNER}/{GITHUB_REPO}")
+        
+        if st.button("🔄 Sync with GitHub", use_container_width=True):
+            load_data()
+            st.success("Synced with GitHub!")
+            time.sleep(1)
+            st.rerun()
 
-# Main app
+# ============================================================
+# MAIN APPLICATION
+# ============================================================
 def main():
     st.set_page_config(
         page_title="SSC (ER) Kolkata - Allocation System",
@@ -969,7 +965,7 @@ def main():
     # Initialize session state
     init_session_state()
     
-    # Load data
+    # Load data from GitHub
     load_data()
     
     # Show reference dialog if open
@@ -986,7 +982,7 @@ def main():
     st.title("🏛️ STAFF SELECTION COMMISSION (ER), KOLKATA")
     st.subheader("Centre Coordinator & Flying Squad Allocation System")
     
-    # Sidebar for quick actions
+    # Sidebar
     with st.sidebar:
         st.image("https://upload.wikimedia.org/wikipedia/commons/thumb/4/41/Seal_of_India.svg/1200px-Seal_of_India.svg.png", 
                  width=100)
@@ -997,7 +993,6 @@ def main():
         if st.session_state.current_exam_key:
             st.success(f"**Current Exam:**\n{st.session_state.current_exam_key}")
             
-            # Quick stats
             col1, col2 = st.columns(2)
             with col1:
                 st.metric("👥 IO", len(st.session_state.allocation))
@@ -1006,8 +1001,8 @@ def main():
         else:
             st.warning("No exam selected")
         
-        # Show data folder info
-        show_data_folder_info()
+        # Show GitHub connection info
+        show_github_info()
         
         st.markdown("---")
         
@@ -1021,7 +1016,7 @@ def main():
         
         if st.button("💾 Save All Data", use_container_width=True):
             if save_data():
-                st.success("Data saved!")
+                st.success("Data saved to GitHub!")
             else:
                 st.error("Failed to save data")
         
@@ -1031,7 +1026,7 @@ def main():
         st.markdown("---")
         
         # System info
-        st.caption(f"**Version:** 1.0")
+        st.caption(f"**Version:** 2.0 (GitHub)")
         st.caption(f"**Last Updated:** {datetime.now().strftime('%d-%m-%Y %H:%M')}")
         st.caption("**Designed by Bijay Paswan**")
     
@@ -1051,7 +1046,6 @@ def main():
         col1, col2 = st.columns([2, 1])
         
         with col1:
-            # Existing exams
             exam_options = sorted(st.session_state.exam_data.keys())
             selected_exam = st.selectbox(
                 "Select Existing Exam",
@@ -1078,7 +1072,6 @@ def main():
                 st.success(f"✅ Loaded exam: {selected_exam}")
                 st.rerun()
             
-            # New exam form
             st.subheader("Create/Update Exam")
             col_name, col_year = st.columns(2)
             with col_name:
@@ -1101,7 +1094,6 @@ def main():
         with col2:
             st.subheader("Actions")
             
-            # Create/Update button
             if st.button("🚀 Create/Update Exam", use_container_width=True, type="primary"):
                 if not st.session_state.exam_name or not st.session_state.exam_year:
                     st.error("❌ Please enter both Exam Name and Year")
@@ -1122,13 +1114,11 @@ def main():
                     else:
                         st.error("❌ Failed to save exam data")
             
-            # Delete button
             if st.session_state.current_exam_key:
                 if st.button("🗑️ Delete Exam", use_container_width=True, type="secondary"):
                     st.warning(f"⚠️ This will delete '{st.session_state.current_exam_key}' and all its allocations!")
                     confirm = st.checkbox("I confirm I want to delete this exam")
                     if confirm:
-                        # Create backup
                         backup_file = create_backup(st.session_state.current_exam_key)
                         
                         del st.session_state.exam_data[st.session_state.current_exam_key]
@@ -1141,7 +1131,7 @@ def main():
                         if save_data():
                             st.success("✅ Exam deleted successfully!")
                             if backup_file:
-                                st.info(f"📁 Backup created: {backup_file.name}")
+                                st.info(f"📁 Backup created: {backup_file}")
                             time.sleep(2)
                             st.rerun()
                         else:
@@ -1172,7 +1162,6 @@ def main():
                     st.session_state.reference_dialog_open = True
                     st.session_state.reference_type = "Centre Coordinator"
                     if 'Centre Coordinator' in st.session_state.allocation_references[exam_key]:
-                        # Pre-fill existing values
                         existing_ref = st.session_state.allocation_references[exam_key]['Centre Coordinator']
                         st.session_state['ref_order_no'] = existing_ref.get('order_no', '')
                         st.session_state['ref_page_no'] = existing_ref.get('page_no', '')
@@ -1192,7 +1181,6 @@ def main():
                     st.session_state.reference_dialog_open = True
                     st.session_state.reference_type = "Flying Squad"
                     if 'Flying Squad' in st.session_state.allocation_references[exam_key]:
-                        # Pre-fill existing values
                         existing_ref = st.session_state.allocation_references[exam_key]['Flying Squad']
                         st.session_state['ref_order_no'] = existing_ref.get('order_no', '')
                         st.session_state['ref_page_no'] = existing_ref.get('page_no', '')
@@ -1212,7 +1200,6 @@ def main():
                     st.session_state.reference_dialog_open = True
                     st.session_state.reference_type = "EY Personnel"
                     if 'EY Personnel' in st.session_state.allocation_references[exam_key]:
-                        # Pre-fill existing values
                         existing_ref = st.session_state.allocation_references[exam_key]['EY Personnel']
                         st.session_state['ref_order_no'] = existing_ref.get('order_no', '')
                         st.session_state['ref_page_no'] = existing_ref.get('page_no', '')
@@ -1238,13 +1225,11 @@ def main():
         if not st.session_state.current_exam_key:
             st.warning("⚠️ Please select or create an exam first from the Exam Management tab")
         else:
-            # Configuration section
             col_config1, col_config2 = st.columns([2, 1])
             
             with col_config1:
                 st.subheader("Step 1: Load Master Data")
                 
-                # File uploaders
                 col_upload1, col_upload2 = st.columns(2)
                 with col_upload1:
                     io_file = st.file_uploader(
@@ -1299,7 +1284,6 @@ def main():
             with col_config2:
                 st.subheader("Step 2: Configuration")
                 
-                # Mode and role selection
                 st.session_state.mock_test_mode = st.checkbox(
                     "Mock Test Mode",
                     value=st.session_state.mock_test_mode,
@@ -1313,7 +1297,6 @@ def main():
                     key="role_selector"
                 )
                 
-                # Remuneration Rates
                 st.subheader("💰 Remuneration Rates")
                 st.session_state.remuneration_rates['multiple_shifts'] = st.number_input(
                     "Multiple Shifts (₹)",
@@ -1342,7 +1325,6 @@ def main():
             
             st.divider()
             
-            # Step 3: Venue and Date Selection
             st.subheader("Step 3: Select Venue & Dates")
             
             if not st.session_state.venue_df.empty:
@@ -1356,22 +1338,18 @@ def main():
                     )
                     
                     if st.session_state.selected_venue:
-                        # Get available dates for selected venue
                         venue_dates_df = st.session_state.venue_df[
                             st.session_state.venue_df['VENUE'] == st.session_state.selected_venue
                         ].copy()
                         
                         if not venue_dates_df.empty:
-                            # Group by date and get shifts
                             date_shifts = {}
                             for date in venue_dates_df['DATE'].unique():
                                 shifts = venue_dates_df[venue_dates_df['DATE'] == date]['SHIFT'].unique()
                                 date_shifts[date] = list(shifts)
                             
-                            # Display date and shift selection
                             st.write("**Select Dates and Shifts:**")
                             
-                            # Initialize session state for date selections
                             if 'date_selections' not in st.session_state:
                                 st.session_state.date_selections = {}
                             if 'shift_selections' not in st.session_state:
@@ -1382,7 +1360,6 @@ def main():
                                 col_date, col_shifts = st.columns([1, 3])
                                 
                                 with col_date:
-                                    # Create a unique key for each date checkbox
                                     date_key = f"date_{date.replace('-', '_').replace(' ', '_')}"
                                     if date_key not in st.session_state.date_selections:
                                         st.session_state.date_selections[date_key] = False
@@ -1398,7 +1375,6 @@ def main():
                                     if select_date:
                                         selected_shifts = []
                                         for shift in date_shifts[date]:
-                                            # Create a unique key for each shift checkbox
                                             shift_key = f"shift_{date.replace('-', '_').replace(' ', '_')}_{shift.replace(' ', '_')}"
                                             if shift_key not in st.session_state.shift_selections:
                                                 st.session_state.shift_selections[shift_key] = True
@@ -1418,12 +1394,10 @@ def main():
                             
                             st.session_state.selected_dates = selected_dates
                             
-                            # Step 4: IO Selection
                             st.divider()
                             st.subheader("Step 4: Select Centre Coordinator")
                             
                             if st.session_state.io_df is not None and not st.session_state.io_df.empty:
-                                # Filter IOs by venue centre code
                                 venue_row = venue_dates_df.iloc[0] if not venue_dates_df.empty else None
                                 if venue_row is not None and 'CENTRE_CODE' in venue_row:
                                     centre_code = str(venue_row['CENTRE_CODE']).zfill(4)
@@ -1437,7 +1411,6 @@ def main():
                                 else:
                                     filtered_io = st.session_state.io_df
                                 
-                                # Search box
                                 search_term = st.text_input("🔍 Search Centre Coordinator by Name or Area", "")
                                 if search_term:
                                     filtered_io = filtered_io[
@@ -1446,7 +1419,6 @@ def main():
                                     ]
                                 
                                 if not filtered_io.empty:
-                                    # Display IO list with allocation status
                                     io_options = []
                                     io_details = {}
                                     
@@ -1455,7 +1427,6 @@ def main():
                                         area = row['AREA']
                                         centre_code = row.get('CENTRE_CODE', '')
                                         
-                                        # Check existing allocations
                                         existing_allocations = [
                                             a for a in st.session_state.allocation 
                                             if a['IO Name'] == io_name and a.get('Exam') == st.session_state.current_exam_key
@@ -1481,7 +1452,6 @@ def main():
                                             'status': status
                                         }
                                     
-                                    # IO selection dropdown
                                     selected_display = st.selectbox(
                                         "Select Centre Coordinator",
                                         options=io_options,
@@ -1491,21 +1461,17 @@ def main():
                                     if selected_display:
                                         io_info = io_details[selected_display]
                                         
-                                        # Allocation button
                                         if st.button("✅ Allocate Selected IO to Dates", use_container_width=True, type="primary"):
                                             if not selected_dates:
                                                 st.error("❌ Please select at least one date and shift")
                                             else:
-                                                # Get allocation reference
                                                 ref_data = get_allocation_reference(st.session_state.selected_role)
                                                 if ref_data:
-                                                    # Perform allocation
                                                     allocation_count = 0
                                                     conflicts = []
                                                     
                                                     for date, shifts in selected_dates.items():
                                                         for shift in shifts:
-                                                            # Check for conflict
                                                             conflict = check_allocation_conflict(
                                                                 io_info['name'], date, shift, 
                                                                 st.session_state.selected_venue, 
@@ -1516,7 +1482,6 @@ def main():
                                                                 conflicts.append(conflict)
                                                                 continue
                                                             
-                                                            # Create allocation
                                                             allocation = {
                                                                 'Sl. No.': len(st.session_state.allocation) + 1,
                                                                 'Venue': st.session_state.selected_venue,
@@ -1540,7 +1505,6 @@ def main():
                                                     if allocation_count > 0:
                                                         if save_data():
                                                             st.success(f"✅ Allocated {io_info['name']} to {allocation_count} shift(s)!")
-                                                            # Clear date selections
                                                             for key in list(st.session_state.date_selections.keys()):
                                                                 st.session_state.date_selections[key] = False
                                                             for key in list(st.session_state.shift_selections.keys()):
@@ -1569,22 +1533,18 @@ def main():
             if st.session_state.allocation:
                 alloc_df = pd.DataFrame(st.session_state.allocation)
                 
-                # Display table
                 st.dataframe(
                     alloc_df[['Sl. No.', 'Venue', 'Date', 'Shift', 'IO Name', 'Area', 'Role', 'Mock Test']],
                     use_container_width=True,
                     hide_index=True
                 )
                 
-                # Delete options
                 col_del1, col_del2 = st.columns(2)
                 with col_del1:
                     if st.button("🗑️ Delete Last Entry", use_container_width=True, type="secondary"):
                         if st.session_state.allocation:
-                            # Ask for deletion reference
                             del_ref = ask_for_deletion_reference(st.session_state.allocation[-1]['Role'], 1)
                             if del_ref:
-                                # Add to deleted records
                                 deleted_entry = st.session_state.allocation[-1].copy()
                                 deleted_entry['Deletion Reason'] = del_ref['reason']
                                 deleted_entry['Deletion Order No.'] = del_ref['order_no']
@@ -1613,7 +1573,6 @@ def main():
         if not st.session_state.current_exam_key:
             st.warning("⚠️ Please select or create an exam first from the Exam Management tab")
         else:
-            # Toggle EY mode
             st.session_state.ey_allocation_mode = st.checkbox(
                 "Enable EY Personnel Allocation Mode",
                 value=st.session_state.ey_allocation_mode,
@@ -1654,7 +1613,6 @@ def main():
                         except Exception as e:
                             st.error(f"❌ Error loading file: {str(e)}")
                     
-                    # EY Rate
                     st.subheader("💰 EY Personnel Rate")
                     st.session_state.remuneration_rates['ey_personnel'] = st.number_input(
                         "Rate per Day (₹)",
@@ -1672,7 +1630,6 @@ def main():
                 with col_ey2:
                     st.subheader("Step 2: Configuration")
                     
-                    # Select venues for EY allocation
                     if not st.session_state.venue_df.empty:
                         venues = sorted(st.session_state.venue_df['VENUE'].dropna().unique())
                         st.session_state.selected_ey_venues = st.multiselect(
@@ -1691,11 +1648,9 @@ def main():
                 
                 st.divider()
                 
-                # Step 3: Select EY Personnel
                 st.subheader("Step 3: Select EY Personnel")
                 
                 if not st.session_state.ey_df.empty:
-                    # Search EY personnel
                     ey_search = st.text_input("🔍 Search EY Personnel by Name, Mobile, or Email", "")
                     
                     if ey_search:
@@ -1708,7 +1663,6 @@ def main():
                         filtered_ey = st.session_state.ey_df
                     
                     if not filtered_ey.empty:
-                        # Display EY personnel list
                         ey_options = []
                         ey_details = {}
                         
@@ -1745,11 +1699,9 @@ def main():
                         if selected_ey_display:
                             ey_info = ey_details[selected_ey_display]
                             
-                            # Step 4: Select Dates
                             st.subheader("Step 4: Select Dates")
                             
                             if not st.session_state.venue_df.empty and st.session_state.selected_ey_venues:
-                                # Get unique dates from selected venues
                                 all_dates = set()
                                 for venue in st.session_state.selected_ey_venues:
                                     venue_dates = st.session_state.venue_df[
@@ -1765,7 +1717,6 @@ def main():
                                         key="ey_date_selector"
                                     )
                                     
-                                    # Get shifts for selected dates
                                     selected_shifts = {}
                                     for date in selected_ey_dates:
                                         shifts = st.multiselect(
@@ -1777,24 +1728,20 @@ def main():
                                         if shifts:
                                             selected_shifts[date] = shifts
                                     
-                                    # Allocation button
                                     if st.button("✅ Allocate EY Personnel", use_container_width=True, type="primary"):
                                         if not selected_shifts:
                                             st.error("❌ Please select at least one date and shift")
                                         elif not st.session_state.selected_ey_venues:
                                             st.error("❌ Please select at least one venue")
                                         else:
-                                            # Get allocation reference
                                             ref_data = get_allocation_reference("EY Personnel")
                                             if ref_data:
-                                                # Perform allocation
                                                 allocation_count = 0
                                                 conflicts = []
                                                 
                                                 for venue in st.session_state.selected_ey_venues:
                                                     for date, shifts in selected_shifts.items():
                                                         for shift in shifts:
-                                                            # Check for conflict
                                                             conflict = check_allocation_conflict(
                                                                 ey_info['name'], date, shift, venue, "", "EY"
                                                             )
@@ -1803,7 +1750,6 @@ def main():
                                                                 conflicts.append(conflict)
                                                                 continue
                                                             
-                                                            # Create allocation
                                                             allocation = {
                                                                 'Sl. No.': len(st.session_state.ey_allocation) + 1,
                                                                 'Venue': venue,
@@ -1862,10 +1808,8 @@ def main():
                     with col_del1:
                         if st.button("🗑️ Delete Last EY Entry", use_container_width=True, type="secondary", key="del_last_ey"):
                             if st.session_state.ey_allocation:
-                                # Ask for deletion reference
                                 del_ref = ask_for_deletion_reference("EY Personnel", 1)
                                 if del_ref:
-                                    # Add to deleted records
                                     deleted_entry = st.session_state.ey_allocation[-1].copy()
                                     deleted_entry['Deletion Reason'] = del_ref['reason']
                                     deleted_entry['Deletion Order No.'] = del_ref['order_no']
@@ -1924,7 +1868,6 @@ def main():
             
             st.divider()
             
-            # Current Statistics
             st.subheader("📊 Current Statistics")
             
             col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
@@ -1979,7 +1922,7 @@ def main():
                     })
             
             if recent_activity:
-                recent_df = pd.DataFrame(recent_activity[-10:])  # Show last 10
+                recent_df = pd.DataFrame(recent_activity[-10:])
                 st.dataframe(recent_df, use_container_width=True, hide_index=True)
             else:
                 st.info("ℹ️ No recent activity")
@@ -1991,26 +1934,31 @@ def main():
         tab_settings, tab_backup, tab_help = st.tabs(["⚙️ Settings", "💾 Backup", "❓ Help"])
         
         with tab_settings:
-            st.subheader("📁 Data Storage Settings")
+            st.subheader("🌐 GitHub Configuration")
             
-            # Current folder info
-            st.info(f"**Current Data Folder:**\n`{DATA_DIR}`")
+            if GITHUB_TOKEN:
+                st.success("✅ GitHub token configured")
+                st.info(f"**Repository:** {GITHUB_OWNER}/{GITHUB_REPO}")
+                st.info(f"**Branch:** {GITHUB_BRANCH}")
+                
+                if check_github_connection():
+                    st.success("✅ Connection to GitHub successful")
+                else:
+                    st.error("❌ Cannot connect to GitHub. Check your token and repository settings.")
+            else:
+                st.error("❌ GitHub token not configured")
+                st.info("""
+                **Setup Required:**
+                1. Create a private GitHub repository
+                2. Generate a Personal Access Token with 'repo' scope
+                3. Add secrets to `.streamlit/secrets.toml`:
+                ```
+                GITHUB_OWNER = "your_username"
+                GITHUB_REPO = "your_repo_name"
+                GITHUB_TOKEN = "your_token_here"
+                ```
+                """)
             
-            # Show folder statistics
-            col_stats1, col_stats2, col_stats3 = st.columns(3)
-            with col_stats1:
-                json_files = list(DATA_DIR.glob("*.json"))
-                st.metric("Data Files", len(json_files))
-            
-            with col_stats2:
-                backup_files = list(BACKUP_DIR.glob("*.json")) if BACKUP_DIR.exists() else []
-                st.metric("Backups", len(backup_files))
-            
-            with col_stats3:
-                total_size = sum(f.stat().st_size for f in DATA_DIR.rglob('*') if f.is_file())
-                st.metric("Total Size", f"{total_size / 1024:.1f} KB")
-            
-            # Data Management
             st.divider()
             st.subheader("🗃️ Data Management")
             
@@ -2049,18 +1997,17 @@ def main():
                         else:
                             st.error("❌ Failed to clear deleted records")
             
-            # System Information
             st.divider()
             st.subheader("💻 System Information")
             
             info_col1, info_col2 = st.columns(2)
             
             with info_col1:
-                st.write("**📁 Data Files:**")
-                st.write(f"- Config: {'✅' if CONFIG_FILE.exists() else '❌'}")
-                st.write(f"- Exam Data: {'✅' if DATA_FILE.exists() else '❌'}")
-                st.write(f"- References: {'✅' if REFERENCE_FILE.exists() else '❌'}")
-                st.write(f"- Deleted Records: {'✅' if DELETED_RECORDS_FILE.exists() else '❌'}")
+                st.write("**📁 Data Files on GitHub:**")
+                st.write(f"- Config: {'✅' if load_from_github(CONFIG_FILE_PATH) else '❌'}")
+                st.write(f"- Exam Data: {'✅' if load_from_github(DATA_FILE_PATH) else '❌'}")
+                st.write(f"- References: {'✅' if load_from_github(REFERENCE_FILE_PATH) else '❌'}")
+                st.write(f"- Deleted Records: {'✅' if load_from_github(DELETED_RECORDS_FILE_PATH) else '❌'}")
             
             with info_col2:
                 st.write("**📊 Current Data:**")
@@ -2078,54 +2025,29 @@ def main():
                 if st.button("💾 Create Backup", use_container_width=True, type="primary"):
                     backup_file = create_backup()
                     if backup_file:
-                        st.success(f"✅ Backup created: {backup_file.name}")
+                        st.success(f"✅ Backup created: {backup_file}")
                     else:
                         st.error("❌ Failed to create backup")
                 
-                # List existing backups
-                BACKUP_DIR.mkdir(exist_ok=True)
-                backup_files = list(BACKUP_DIR.glob("*.json"))
-                
-                if backup_files:
+                # List available backups from GitHub
+                try:
+                    backup_files = []
+                    # Try to get list of backup files from GitHub
                     st.write("**📂 Available Backups:**")
-                    for i, backup_file in enumerate(sorted(backup_files, reverse=True)[:5]):
-                        file_time = datetime.fromtimestamp(backup_file.stat().st_mtime).strftime('%d-%m-%Y %H:%M')
-                        st.write(f"{i+1}. {backup_file.name}")
-                        st.caption(f"   Created: {file_time} | Size: {backup_file.stat().st_size} bytes")
-                else:
+                    st.info("Backups are automatically created when deleting exams")
+                except:
                     st.info("ℹ️ No backups available yet")
             
             with col_back2:
-                if BACKUP_DIR.exists():
-                    backup_files = list(BACKUP_DIR.glob("*.json"))
-                    if backup_files:
-                        backup_options = [f.name for f in sorted(backup_files, reverse=True)]
-                        selected_backup = st.selectbox(
-                            "Select Backup to Restore",
-                            options=backup_options,
-                            key="backup_selector"
-                        )
-                        
-                        if st.button("🔄 Restore Backup", use_container_width=True, type="secondary"):
-                            st.warning("⚠️ This will overwrite ALL current data!")
-                            confirm = st.checkbox("I confirm I want to restore from backup")
-                            if confirm:
-                                backup_path = BACKUP_DIR / selected_backup
-                                if restore_from_backup(backup_path):
-                                    st.success("✅ Backup restored successfully!")
-                                    time.sleep(2)
-                                    st.rerun()
-                                else:
-                                    st.error("❌ Failed to restore backup")
-                    else:
-                        st.info("ℹ️ No backups available to restore")
-                else:
-                    st.warning("⚠️ Backup directory not available")
+                if st.button("🔄 Load from GitHub", use_container_width=True, type="secondary"):
+                    load_data()
+                    st.success("✅ Data loaded from GitHub!")
+                    time.sleep(1)
+                    st.rerun()
         
         with tab_help:
             st.subheader("❓ Help & Documentation")
             
-            # FIXED: Using raw string to avoid Unicode escape error
             st.markdown(r"""
             ### 📖 User Guide
 
@@ -2158,6 +2080,12 @@ def main():
             - View deleted records
             - System settings
 
+            ### 🌐 GitHub Storage
+            - All data is stored in your private GitHub repository
+            - Data is automatically synced with GitHub
+            - Your repository must be **private** for security
+            - You need a Personal Access Token with 'repo' scope
+
             ### 📝 Data Format Requirements
 
             **Centre Coordinator Master File (Excel)**
@@ -2178,21 +2106,13 @@ def main():
             Required columns:
             - `NAME`: Name of EY Personnel
 
-            Optional columns:
-            - `MOBILE`: Mobile number
-            - `EMAIL`: Email address
-            - `ID_NUMBER`: ID number
-            - `DESIGNATION`: Designation
-            - `DEPARTMENT`: Department
-
             ### ⚠️ Important Notes
 
-            - **Data Storage**: All data is stored in: `C:\Users\user\Desktop\CC_FSO_EY ALLOCATION`
+            - **Data Storage**: All data is stored in your private GitHub repository
             - Always set allocation references before allocating
             - Use the search functionality to find personnel quickly
             - Regularly backup your data
             - Check for allocation conflicts before finalizing
-            - All data is stored locally in JSON files
 
             ### 🆘 Support
 
@@ -2201,7 +2121,7 @@ def main():
             ---
 
             **Designed by Bijay Paswan**  
-            **Version 1.0**  
+            **Version 2.0 (GitHub)**  
             **Staff Selection Commission (ER), Kolkata**  
             © All rights reserved
             """)
