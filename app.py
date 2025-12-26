@@ -155,6 +155,7 @@ def init_session_state():
         'selected_ey_venues': [],
         'date_selections': {},
         'shift_selections': {},
+        'date_expanded': {},
         'reference_dialog_open': False,
         'reference_type': "",
         'deletion_dialog_open': False,
@@ -1247,7 +1248,7 @@ def main():
             
             st.divider()
             
-            # Step 3: Venue and Date Selection
+            # Step 3: Venue and Date Selection - ENHANCED VERSION
             st.subheader("Step 3: Select Venue & Dates")
             
             if not st.session_state.venue_df.empty:
@@ -1273,199 +1274,271 @@ def main():
                                 shifts = venue_dates_df[venue_dates_df['DATE'] == date]['SHIFT'].unique()
                                 date_shifts[date] = list(shifts)
                             
-                            # Display date and shift selection
+                            # Display date and shift selection in a grid (3-4 columns)
                             st.write("**Select Dates and Shifts:**")
                             
-                            # Initialize session state for date selections
+                            # Initialize session state for date selections if not exists
                             if 'date_selections' not in st.session_state:
                                 st.session_state.date_selections = {}
                             if 'shift_selections' not in st.session_state:
                                 st.session_state.shift_selections = {}
+                            if 'date_expanded' not in st.session_state:
+                                st.session_state.date_expanded = {}
                             
-                            selected_dates = {}
-                            for date in sorted(date_shifts.keys()):
-                                col_date, col_shifts = st.columns([1, 3])
+                            # Create "Select All Dates" checkbox
+                            col_select_all, _ = st.columns([1, 3])
+                            with col_select_all:
+                                select_all = st.checkbox("Select All Dates", key="select_all_dates")
+                            
+                            if select_all:
+                                for date in date_shifts.keys():
+                                    date_key = f"date_{date}"
+                                    st.session_state.date_selections[date_key] = True
+                                    for shift in date_shifts[date]:
+                                        shift_key = f"shift_{date}_{shift}"
+                                        st.session_state.shift_selections[shift_key] = True
+                            
+                            # Create grid layout (3-4 dates per row)
+                            dates_list = sorted(date_shifts.keys())
+                            num_cols = min(4, len(dates_list))  # Up to 4 columns
+                            
+                            if dates_list:
+                                # Create columns
+                                cols = st.columns(num_cols)
                                 
-                                with col_date:
-                                    # Create a unique key for each date checkbox
-                                    date_key = f"date_{date.replace('-', '_').replace(' ', '_')}"
-                                    if date_key not in st.session_state.date_selections:
-                                        st.session_state.date_selections[date_key] = False
-                                    
-                                    select_date = st.checkbox(
-                                        date, 
-                                        value=st.session_state.date_selections[date_key],
-                                        key=date_key
-                                    )
-                                    st.session_state.date_selections[date_key] = select_date
+                                selected_dates = {}
                                 
-                                with col_shifts:
-                                    if select_date:
-                                        selected_shifts = []
+                                for idx, date in enumerate(dates_list):
+                                    col_idx = idx % num_cols
+                                    with cols[col_idx]:
+                                        # Create a unique key for each date
+                                        date_key = f"date_{date.replace('-', '_').replace(' ', '_')}"
+                                        
+                                        # Initialize if not exists
+                                        if date_key not in st.session_state.date_selections:
+                                            st.session_state.date_selections[date_key] = False
+                                        if date_key not in st.session_state.date_expanded:
+                                            st.session_state.date_expanded[date_key] = False
+                                        
+                                        # Determine button color based on shift selections
+                                        all_selected = True
+                                        any_selected = False
                                         for shift in date_shifts[date]:
-                                            # Create a unique key for each shift checkbox
                                             shift_key = f"shift_{date.replace('-', '_').replace(' ', '_')}_{shift.replace(' ', '_')}"
                                             if shift_key not in st.session_state.shift_selections:
-                                                st.session_state.shift_selections[shift_key] = True
-                                            
-                                            select_shift = st.checkbox(
-                                                shift,
-                                                value=st.session_state.shift_selections[shift_key],
-                                                key=shift_key
-                                            )
-                                            st.session_state.shift_selections[shift_key] = select_shift
-                                            
-                                            if select_shift:
-                                                selected_shifts.append(shift)
-                                        
-                                        if selected_shifts:
-                                            selected_dates[date] = selected_shifts
-                            
-                            st.session_state.selected_dates = selected_dates
-                            
-                            # Step 4: IO Selection
-                            st.divider()
-                            st.subheader("Step 4: Select Centre Coordinator")
-                            
-                            if st.session_state.io_df is not None and not st.session_state.io_df.empty:
-                                # Filter IOs by venue centre code
-                                venue_row = venue_dates_df.iloc[0] if not venue_dates_df.empty else None
-                                if venue_row is not None and 'CENTRE_CODE' in venue_row:
-                                    centre_code = str(venue_row['CENTRE_CODE']).zfill(4)
-                                    filtered_io = st.session_state.io_df[
-                                        st.session_state.io_df['CENTRE_CODE'].astype(str).str.zfill(4).str.startswith(centre_code[:4])
-                                    ]
-                                    
-                                    if filtered_io.empty:
-                                        filtered_io = st.session_state.io_df
-                                        st.warning(f"⚠️ No IOs found with matching centre code. Showing all IOs.")
-                                else:
-                                    filtered_io = st.session_state.io_df
-                                
-                                # Search box
-                                search_term = st.text_input("🔍 Search Centre Coordinator by Name or Area", "")
-                                if search_term:
-                                    filtered_io = filtered_io[
-                                        (filtered_io['NAME'].str.contains(search_term, case=False, na=False)) |
-                                        (filtered_io['AREA'].str.contains(search_term, case=False, na=False))
-                                    ]
-                                
-                                if not filtered_io.empty:
-                                    # Display IO list with allocation status
-                                    io_options = []
-                                    io_details = {}
-                                    
-                                    for _, row in filtered_io.iterrows():
-                                        io_name = row['NAME']
-                                        area = row['AREA']
-                                        centre_code = row.get('CENTRE_CODE', '')
-                                        
-                                        # Check existing allocations
-                                        existing_allocations = [
-                                            a for a in st.session_state.allocation 
-                                            if a['IO Name'] == io_name and a.get('Exam') == st.session_state.current_exam_key
-                                        ]
-                                        
-                                        status = "🟢 Available"
-                                        if existing_allocations:
-                                            current_venue_allocations = [
-                                                a for a in existing_allocations 
-                                                if a['Venue'] == st.session_state.selected_venue and a['Role'] == st.session_state.selected_role
-                                            ]
-                                            if current_venue_allocations:
-                                                status = "🔴 Already allocated here"
+                                                st.session_state.shift_selections[shift_key] = False
+                                            if st.session_state.shift_selections[shift_key]:
+                                                any_selected = True
                                             else:
-                                                status = "🟡 Allocated elsewhere"
+                                                all_selected = False
                                         
-                                        display_text = f"{io_name} ({area}) - {status}"
-                                        io_options.append(display_text)
-                                        io_details[display_text] = {
-                                            'name': io_name,
-                                            'area': area,
-                                            'centre_code': centre_code,
-                                            'status': status
-                                        }
-                                    
-                                    # IO selection dropdown
-                                    selected_display = st.selectbox(
-                                        "Select Centre Coordinator",
-                                        options=io_options,
-                                        key="io_selector"
-                                    )
-                                    
-                                    if selected_display:
-                                        io_info = io_details[selected_display]
+                                        # Set button color
+                                        if all_selected:
+                                            button_color = "success"  # Green
+                                            button_text = f"✅ {date}"
+                                        elif any_selected:
+                                            button_color = "warning"  # Orange
+                                            button_text = f"⚠️ {date}"
+                                        else:
+                                            button_color = "secondary"  # Yellow
+                                            button_text = f"📅 {date}"
                                         
-                                        # Allocation button
-                                        if st.button("✅ Allocate Selected IO to Dates", use_container_width=True, type="primary"):
-                                            if not selected_dates:
-                                                st.error("❌ Please select at least one date and shift")
-                                            else:
-                                                # Get allocation reference
-                                                ref_data = get_allocation_reference(st.session_state.selected_role)
-                                                if ref_data:
-                                                    # Perform allocation
-                                                    allocation_count = 0
-                                                    conflicts = []
-                                                    
-                                                    for date, shifts in selected_dates.items():
-                                                        for shift in shifts:
-                                                            # Check for conflict
-                                                            conflict = check_allocation_conflict(
-                                                                io_info['name'], date, shift, 
-                                                                st.session_state.selected_venue, 
-                                                                st.session_state.selected_role, "IO"
-                                                            )
-                                                            
-                                                            if conflict:
-                                                                conflicts.append(conflict)
-                                                                continue
-                                                            
-                                                            # Create allocation
-                                                            allocation = {
-                                                                'Sl. No.': len(st.session_state.allocation) + 1,
-                                                                'Venue': st.session_state.selected_venue,
-                                                                'Date': date,
-                                                                'Shift': shift,
-                                                                'IO Name': io_info['name'],
-                                                                'Area': io_info['area'],
-                                                                'Role': st.session_state.selected_role,
-                                                                'Mock Test': st.session_state.mock_test_mode,
-                                                                'Exam': st.session_state.current_exam_key,
-                                                                'Order No.': ref_data['order_no'],
-                                                                'Page No.': ref_data['page_no'],
-                                                                'Reference Remarks': ref_data.get('remarks', '')
-                                                            }
-                                                            st.session_state.allocation.append(allocation)
-                                                            allocation_count += 1
-                                                    
-                                                    if conflicts:
-                                                        st.error(f"❌ Allocation conflicts:\n" + "\n".join(conflicts[:3]))
-                                                    
-                                                    if allocation_count > 0:
-                                                        if save_data():
-                                                            st.success(f"✅ Allocated {io_info['name']} to {allocation_count} shift(s)!")
-                                                            # Clear date selections
-                                                            for key in list(st.session_state.date_selections.keys()):
-                                                                st.session_state.date_selections[key] = False
-                                                            for key in list(st.session_state.shift_selections.keys()):
-                                                                st.session_state.shift_selections[key] = False
-                                                            time.sleep(2)
-                                                            st.rerun()
-                                                        else:
-                                                            st.error("❌ Failed to save allocation")
-                                                else:
-                                                    st.warning("⚠️ Allocation cancelled - no reference provided")
+                                        # Date button (simulating single-click to toggle all shifts)
+                                        if st.button(button_text, key=f"btn_{date_key}", 
+                                                   type=button_color,
+                                                   help=f"Click to toggle all shifts for {date}. Click 'Show Shifts' to show/hide shift checkboxes."):
+                                            # Toggle all shifts for this date
+                                            new_state = not all_selected
+                                            for shift in date_shifts[date]:
+                                                shift_key = f"shift_{date.replace('-', '_').replace(' ', '_')}_{shift.replace(' ', '_')}"
+                                                st.session_state.shift_selections[shift_key] = new_state
+                                            st.rerun()
+                                        
+                                        # Show/Hide shifts button
+                                        expand_label = "🔽 Show Shifts" if not st.session_state.date_expanded.get(date_key, False) else "🔼 Hide Shifts"
+                                        if st.button(expand_label, key=f"expand_{date_key}", type="secondary"):
+                                            st.session_state.date_expanded[date_key] = not st.session_state.date_expanded.get(date_key, False)
+                                            st.rerun()
+                                        
+                                        # Show shift checkboxes if expanded
+                                        if st.session_state.date_expanded.get(date_key, False):
+                                            selected_shifts_for_date = []
+                                            for shift in date_shifts[date]:
+                                                shift_key = f"shift_{date.replace('-', '_').replace(' ', '_')}_{shift.replace(' ', '_')}"
+                                                shift_selected = st.checkbox(
+                                                    shift,
+                                                    value=st.session_state.shift_selections[shift_key],
+                                                    key=shift_key
+                                                )
+                                                st.session_state.shift_selections[shift_key] = shift_selected
+                                                
+                                                if shift_selected:
+                                                    selected_shifts_for_date.append(shift)
+                                            
+                                            if selected_shifts_for_date:
+                                                selected_dates[date] = selected_shifts_for_date
+                                        else:
+                                            # Still need to collect selected shifts even if not expanded
+                                            selected_shifts_for_date = []
+                                            for shift in date_shifts[date]:
+                                                shift_key = f"shift_{date.replace('-', '_').replace(' ', '_')}_{shift.replace(' ', '_')}"
+                                                if st.session_state.shift_selections[shift_key]:
+                                                    selected_shifts_for_date.append(shift)
+                                            
+                                            if selected_shifts_for_date:
+                                                selected_dates[date] = selected_shifts_for_date
+                                
+                                st.session_state.selected_dates = selected_dates
+                                
+                                # Display selection summary
+                                if selected_dates:
+                                    st.info(f"✅ Selected {len(selected_dates)} date(s) with shifts")
                                 else:
-                                    st.warning("⚠️ No Centre Coordinators found matching the search criteria")
-                            else:
-                                st.warning("⚠️ Please load Centre Coordinator master data first")
+                                    st.warning("⚠️ No dates selected")
                         else:
                             st.warning("⚠️ No date information found for selected venue")
                 else:
                     st.warning("⚠️ No venues found in the loaded data")
             else:
                 st.warning("⚠️ Please load venue data first")
+            
+            # Step 4: IO Selection
+            st.divider()
+            st.subheader("Step 4: Select Centre Coordinator")
+            
+            if st.session_state.io_df is not None and not st.session_state.io_df.empty:
+                # Filter IOs by venue centre code
+                venue_row = venue_dates_df.iloc[0] if not venue_dates_df.empty else None
+                if venue_row is not None and 'CENTRE_CODE' in venue_row:
+                    centre_code = str(venue_row['CENTRE_CODE']).zfill(4)
+                    filtered_io = st.session_state.io_df[
+                        st.session_state.io_df['CENTRE_CODE'].astype(str).str.zfill(4).str.startswith(centre_code[:4])
+                    ]
+                    
+                    if filtered_io.empty:
+                        filtered_io = st.session_state.io_df
+                        st.warning(f"⚠️ No IOs found with matching centre code. Showing all IOs.")
+                else:
+                    filtered_io = st.session_state.io_df
+                
+                # Search box
+                search_term = st.text_input("🔍 Search Centre Coordinator by Name or Area", "")
+                if search_term:
+                    filtered_io = filtered_io[
+                        (filtered_io['NAME'].str.contains(search_term, case=False, na=False)) |
+                        (filtered_io['AREA'].str.contains(search_term, case=False, na=False))
+                    ]
+                
+                if not filtered_io.empty:
+                    # Display IO list with allocation status
+                    io_options = []
+                    io_details = {}
+                    
+                    for _, row in filtered_io.iterrows():
+                        io_name = row['NAME']
+                        area = row['AREA']
+                        centre_code = row.get('CENTRE_CODE', '')
+                        
+                        # Check existing allocations
+                        existing_allocations = [
+                            a for a in st.session_state.allocation 
+                            if a['IO Name'] == io_name and a.get('Exam') == st.session_state.current_exam_key
+                        ]
+                        
+                        status = "🟢 Available"
+                        if existing_allocations:
+                            current_venue_allocations = [
+                                a for a in existing_allocations 
+                                if a['Venue'] == st.session_state.selected_venue and a['Role'] == st.session_state.selected_role
+                            ]
+                            if current_venue_allocations:
+                                status = "🔴 Already allocated here"
+                            else:
+                                status = "🟡 Allocated elsewhere"
+                        
+                        display_text = f"{io_name} ({area}) - {status}"
+                        io_options.append(display_text)
+                        io_details[display_text] = {
+                            'name': io_name,
+                            'area': area,
+                            'centre_code': centre_code,
+                            'status': status
+                        }
+                    
+                    # IO selection dropdown
+                    selected_display = st.selectbox(
+                        "Select Centre Coordinator",
+                        options=io_options,
+                        key="io_selector"
+                    )
+                    
+                    if selected_display:
+                        io_info = io_details[selected_display]
+                        
+                        # Allocation button
+                        if st.button("✅ Allocate Selected IO to Dates", use_container_width=True, type="primary"):
+                            if not selected_dates:
+                                st.error("❌ Please select at least one date and shift")
+                            else:
+                                # Get allocation reference
+                                ref_data = get_allocation_reference(st.session_state.selected_role)
+                                if ref_data:
+                                    # Perform allocation
+                                    allocation_count = 0
+                                    conflicts = []
+                                    
+                                    for date, shifts in selected_dates.items():
+                                        for shift in shifts:
+                                            # Check for conflict
+                                            conflict = check_allocation_conflict(
+                                                io_info['name'], date, shift, 
+                                                st.session_state.selected_venue, 
+                                                st.session_state.selected_role, "IO"
+                                            )
+                                            
+                                            if conflict:
+                                                conflicts.append(conflict)
+                                                continue
+                                            
+                                            # Create allocation
+                                            allocation = {
+                                                'Sl. No.': len(st.session_state.allocation) + 1,
+                                                'Venue': st.session_state.selected_venue,
+                                                'Date': date,
+                                                'Shift': shift,
+                                                'IO Name': io_info['name'],
+                                                'Area': io_info['area'],
+                                                'Role': st.session_state.selected_role,
+                                                'Mock Test': st.session_state.mock_test_mode,
+                                                'Exam': st.session_state.current_exam_key,
+                                                'Order No.': ref_data['order_no'],
+                                                'Page No.': ref_data['page_no'],
+                                                'Reference Remarks': ref_data.get('remarks', '')
+                                            }
+                                            st.session_state.allocation.append(allocation)
+                                            allocation_count += 1
+                                    
+                                    if conflicts:
+                                        st.error(f"❌ Allocation conflicts:\n" + "\n".join(conflicts[:3]))
+                                    
+                                    if allocation_count > 0:
+                                        if save_data():
+                                            st.success(f"✅ Allocated {io_info['name']} to {allocation_count} shift(s)!")
+                                            # Clear date selections
+                                            for key in list(st.session_state.date_selections.keys()):
+                                                st.session_state.date_selections[key] = False
+                                            for key in list(st.session_state.shift_selections.keys()):
+                                                st.session_state.shift_selections[key] = False
+                                            time.sleep(2)
+                                            st.rerun()
+                                        else:
+                                            st.error("❌ Failed to save allocation")
+                                else:
+                                    st.warning("⚠️ Allocation cancelled - no reference provided")
+                else:
+                    st.warning("⚠️ No Centre Coordinators found matching the search criteria")
+            else:
+                st.warning("⚠️ Please load Centre Coordinator master data first")
             
             # Display current allocations
             st.divider()
@@ -2112,4 +2185,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
